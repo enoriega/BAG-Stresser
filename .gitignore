@@ -20,3 +20,5 @@ SOLUTION_SUMMARY.md
 
 # pytest
 .pytest_cache/
+.coverage
+htmlcov/
