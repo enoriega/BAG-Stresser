@@ -8,3 +8,15 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Environment files
+.env
+
+# Test and debug files
+debug_*.py
+example_usage_safe.py
+DEBUGGING_NOTES.md
+SOLUTION_SUMMARY.md
+
+# pytest
+.pytest_cache/

@@ -9,3 +9,9 @@ dependencies = [
     "langchain-openai>=0.0.5",
     "python-dotenv>=1.0.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-mock>=3.12.0",
+]
