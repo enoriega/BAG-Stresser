@@ -1,0 +1,13 @@
+{
+  "conversation_id": "conv_10",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What's the best way to learn a new programming language?"
+    },
+    {
+      "role": "assistant",
+      "content": "The best approach combines: 1) Start with basics (syntax, data types), 2) Build small projects immediately (don't just read), 3) Read others' code, 4) Practice daily (consistency matters), 5) Join communities for help. Learning by doing is far more effective than passive reading."
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "conversation_id": "conv_07",
+  "messages": [
+    {
+      "role": "user",
+      "content": "How do I create a REST API with FastAPI?"
+    },
+    {
+      "role": "assistant",
+      "content": "Install FastAPI and uvicorn: 'pip install fastapi uvicorn'. Create a file with: from fastapi import FastAPI; app = FastAPI(); @app.get('/') async def root(): return {'message': 'Hello'}. Run with: 'uvicorn main:app --reload'. Your API will be at http://localhost:8000."
+    },
+    {
+      "role": "user",
+      "content": "How do I add path parameters?"
+    },
+    {
+      "role": "assistant",
+      "content": "Define path parameters in the function: @app.get('/items/{item_id}') async def read_item(item_id: int): return {'item_id': item_id}. FastAPI automatically validates the type and converts the parameter."
+    },
+    {
+      "role": "user",
+      "content": "What about query parameters?"
+    },
+    {
+      "role": "assistant",
+      "content": "Add them as function parameters: @app.get('/items/') async def read_items(skip: int = 0, limit: int = 10): return {'skip': skip, 'limit': limit}. Access via: /items/?skip=5&limit=20. Default values make them optional."
+    }
+  ]
+}

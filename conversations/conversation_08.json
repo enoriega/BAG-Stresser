@@ -1,0 +1,21 @@
+{
+  "conversation_id": "conv_08",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Explain the concept of recursion."
+    },
+    {
+      "role": "assistant",
+      "content": "Recursion is when a function calls itself to solve a problem by breaking it into smaller, similar subproblems. Each recursive call works on a simpler version until reaching a base case that stops the recursion. Classic example: factorial(5) = 5 * factorial(4) = 5 * 4 * factorial(3), etc."
+    },
+    {
+      "role": "user",
+      "content": "Can you show a simple code example?"
+    },
+    {
+      "role": "assistant",
+      "content": "Here's a factorial function: def factorial(n): if n <= 1: return 1; return n * factorial(n-1). The base case is 'if n <= 1', which stops recursion. For factorial(3): returns 3 * factorial(2) -> 3 * 2 * factorial(1) -> 3 * 2 * 1 = 6."
+    }
+  ]
+}
