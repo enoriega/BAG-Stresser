@@ -29,7 +29,8 @@ async def run_multi_session(
     model_name: str = None,
     api_key: str = None,
     api_base: str = None,
-    temperature_range: tuple[float, float] = (0.5, 1.0)
+    temperature_range: tuple[float, float] = (0.5, 1.0),
+    worker_id: int = None
 ) -> list[UserSessionStats]:
     """
     Run multiple user sessions concurrently.
@@ -42,24 +43,28 @@ async def run_multi_session(
         api_key: API key
         api_base: API base URL
         temperature_range: Temperature range for random selection
+        worker_id: Optional worker ID for logging (used in multiprocessing mode)
 
     Returns:
         List of UserSessionStats from each session
     """
+    # Prefix for all log messages
+    prefix = f"[Worker {worker_id}] " if worker_id is not None else ""
+
     print("=" * 70)
-    print("MULTI-SESSION STRESS TEST")
+    print(f"{prefix}MULTI-SESSION STRESS TEST")
     print("=" * 70)
-    print(f"Sessions: {num_sessions} concurrent sessions")
-    print(f"Duration: {duration} seconds per session")
-    print(f"Model: {model_name if model_name else 'Random selection'}")
-    print(f"Temperature range: {temperature_range[0]} - {temperature_range[1]}")
+    print(f"{prefix}Sessions: {num_sessions} concurrent sessions")
+    print(f"{prefix}Duration: {duration} seconds per session")
+    print(f"{prefix}Model: {model_name if model_name else 'Random selection'}")
+    print(f"{prefix}Temperature range: {temperature_range[0]} - {temperature_range[1]}")
     print("=" * 70)
     print()
 
     # Create tasks for all sessions
     tasks = []
     for session_id in range(1, num_sessions + 1):
-        print(f"[Session {session_id}] Preparing to launch...")
+        print(f"{prefix}[Session {session_id}] Preparing to launch...")
         task = asyncio.create_task(
             run_single_session(
                 session_id=session_id,
@@ -68,13 +73,14 @@ async def run_multi_session(
                 model_name=model_name,
                 api_key=api_key,
                 api_base=api_base,
-                temperature_range=temperature_range
+                temperature_range=temperature_range,
+                worker_id=worker_id
             )
         )
         tasks.append(task)
 
     print()
-    print(f"Launching all {num_sessions} sessions concurrently...")
+    print(f"{prefix}Launching all {num_sessions} sessions concurrently...")
     print("=" * 70)
     print()
 
@@ -88,19 +94,19 @@ async def run_multi_session(
     failed_count = 0
     for i, result in enumerate(results, 1):
         if isinstance(result, Exception):
-            print(f"\n[Session {i}] FAILED with error: {result}")
+            print(f"\n{prefix}[Session {i}] FAILED with error: {result}")
             failed_count += 1
         else:
             successful_results.append(result)
 
     print()
     print("=" * 70)
-    print("ALL SESSIONS COMPLETED")
+    print(f"{prefix}ALL SESSIONS COMPLETED")
     print("=" * 70)
-    print(f"Total elapsed time: {(end_time - start_time).total_seconds():.1f} seconds")
-    print(f"Successful sessions: {len(successful_results)}/{num_sessions}")
+    print(f"{prefix}Total elapsed time: {(end_time - start_time).total_seconds():.1f} seconds")
+    print(f"{prefix}Successful sessions: {len(successful_results)}/{num_sessions}")
     if failed_count > 0:
-        print(f"Failed sessions: {failed_count}")
+        print(f"{prefix}Failed sessions: {failed_count}")
     print()
 
     return successful_results
@@ -113,7 +119,8 @@ async def run_single_session(
     model_name: str = None,
     api_key: str = None,
     api_base: str = None,
-    temperature_range: tuple[float, float] = (0.5, 1.0)
+    temperature_range: tuple[float, float] = (0.5, 1.0),
+    worker_id: int = None
 ) -> UserSessionStats:
     """
     Run a single user session with session ID prefix for logging.
@@ -126,11 +133,18 @@ async def run_single_session(
         api_key: API key
         api_base: API base URL
         temperature_range: Temperature range for random selection
+        worker_id: Optional worker ID for logging (used in multiprocessing mode)
 
     Returns:
         UserSessionStats from the session
     """
-    print(f"\n[Session {session_id}] Starting...")
+    # Build logging prefix
+    if worker_id is not None:
+        prefix = f"[Worker {worker_id}][Session {session_id}]"
+    else:
+        prefix = f"[Session {session_id}]"
+
+    print(f"\n{prefix} Starting...")
 
     try:
         stats = await simulate_user_session(
@@ -142,15 +156,15 @@ async def run_single_session(
             temperature_range=temperature_range
         )
 
-        print(f"\n[Session {session_id}] ✓ Completed successfully")
-        print(f"[Session {session_id}]   - Conversations: {stats.total_conversations}")
-        print(f"[Session {session_id}]   - Messages: {stats.total_messages_sent}")
-        print(f"[Session {session_id}]   - Tokens: {stats.total_tokens:,}")
+        print(f"\n{prefix} ✓ Completed successfully")
+        print(f"{prefix}   - Conversations: {stats.total_conversations}")
+        print(f"{prefix}   - Messages: {stats.total_messages_sent}")
+        print(f"{prefix}   - Tokens: {stats.total_tokens:,}")
 
         return stats
 
     except Exception as e:
-        print(f"\n[Session {session_id}] ✗ Failed: {str(e)}")
+        print(f"\n{prefix} ✗ Failed: {str(e)}")
         raise
 
 
@@ -290,14 +304,16 @@ def run_worker_process(
     Returns:
         List of UserSessionStats from all sessions in this worker
     """
-    print(f"\n[Worker {worker_id}] Process started (PID: {os.getpid()})")
+    print(f"\n{'=' * 70}")
+    print(f"[Worker {worker_id}] Process started (PID: {os.getpid()})")
+    print(f"{'=' * 70}")
 
     # Create new event loop for this process
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     try:
-        # Run the async multi-session function
+        # Run the async multi-session function with worker_id for logging
         results = loop.run_until_complete(
             run_multi_session(
                 num_sessions=num_sessions,
@@ -306,13 +322,18 @@ def run_worker_process(
                 model_name=model_name,
                 api_key=api_key,
                 api_base=api_base,
-                temperature_range=temperature_range
+                temperature_range=temperature_range,
+                worker_id=worker_id
             )
         )
-        print(f"\n[Worker {worker_id}] Completed with {len(results)} successful sessions")
+        print(f"\n{'=' * 70}")
+        print(f"[Worker {worker_id}] Completed with {len(results)} successful sessions")
+        print(f"{'=' * 70}")
         return results
     except Exception as e:
-        print(f"\n[Worker {worker_id}] Failed with error: {e}")
+        print(f"\n{'=' * 70}")
+        print(f"[Worker {worker_id}] Failed with error: {e}")
+        print(f"{'=' * 70}")
         return []
     finally:
         loop.close()
