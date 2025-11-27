@@ -140,6 +140,78 @@ Max Latency: 4.123s
 uv run python example_session.py
 ```
 
+### Multi-Session Concurrent Execution
+
+Run multiple user sessions concurrently to maximize stress testing throughput:
+
+```bash
+# Run 1 session (default) for 30 seconds
+python multi_session.py --duration 30
+
+# Run 3 concurrent sessions for 60 seconds
+python multi_session.py --sessions 3 --duration 60
+
+# Run 5 sessions with a specific model
+python multi_session.py --sessions 5 --duration 45 --model gpt-4
+
+# Run 10 sessions with custom temperature range
+python multi_session.py --sessions 10 --duration 30 --temp-min 0.3 --temp-max 0.9
+
+# Show detailed reports for each individual session
+python multi_session.py --sessions 3 --duration 60 --show-individual
+```
+
+**Command-line options:**
+- `--sessions, -s`: Number of concurrent sessions to run (default: 1)
+- `--duration, -d`: Duration in seconds for each session (default: 60)
+- `--conversations-dir, -c`: Directory containing conversation JSON files (default: conversations)
+- `--model, -m`: Model name to use (default: random selection from API)
+- `--temp-min`: Minimum temperature for random selection (default: 0.5)
+- `--temp-max`: Maximum temperature for random selection (default: 1.0)
+- `--show-individual`: Show detailed report for each individual session
+
+**Features:**
+- **True concurrency**: All sessions run simultaneously using asyncio.gather()
+- **Aggregate statistics**: Combined metrics across all sessions
+- **Individual reporting**: Optional detailed reports per session
+- **Error tracking**: Monitors and reports failed sessions
+- **Throughput metrics**: Tokens/second and conversations/minute across all sessions
+
+**Example output:**
+```
+AGGREGATE STATISTICS ACROSS ALL SESSIONS
+======================================================================
+Number of Sessions: 3
+Total Duration: 60.0s
+
+CONVERSATION STATISTICS
+----------------------------------------------------------------------
+Total Conversations: 45
+  Successful: 43 (95.6%)
+  Failed: 2 (4.4%)
+  Rate: 45.00 conversations/minute
+
+MESSAGE & TOKEN STATISTICS
+----------------------------------------------------------------------
+Total Messages Sent: 215
+Total Tokens: 28,450
+  Input Tokens: 11,200
+  Output Tokens: 17,250
+  Throughput: 474.2 tokens/second
+
+LATENCY STATISTICS
+----------------------------------------------------------------------
+Average Latency: 1.823s
+Min Latency: 0.654s
+Max Latency: 4.123s
+
+MODELS USED
+----------------------------------------------------------------------
+  - gpt-3.5-turbo
+  - gpt-4
+======================================================================
+```
+
 ## Conversation Format
 
 Conversations are stored as JSON files with the following structure:
@@ -281,6 +353,72 @@ Outputs a comprehensive report including:
 - Models used
 - Error summary (if any failures)
 
+### Multi-Session Functions (multi_session.py)
+
+#### `run_multi_session()`
+
+Run multiple user sessions concurrently (async function).
+
+```python
+async def run_multi_session(
+    num_sessions: int,
+    duration: int,
+    conversations_dir: str,
+    model_name: str = None,
+    api_key: str = None,
+    api_base: str = None,
+    temperature_range: tuple[float, float] = (0.5, 1.0)
+) -> list[UserSessionStats]
+```
+
+**Parameters:**
+- `num_sessions`: Number of concurrent sessions to run
+- `duration`: Duration in seconds for each session
+- `conversations_dir`: Directory containing conversation files
+- `model_name`: Model to use (None = random selection)
+- `api_key`: API key
+- `api_base`: API base URL
+- `temperature_range`: Temperature range for random selection
+
+**Returns:** List of `UserSessionStats` from each session
+
+**Behavior:**
+- Launches all sessions concurrently using asyncio.gather()
+- Tracks success and failure for each session
+- Returns only successful session results
+- Reports failed sessions with error messages
+
+#### `aggregate_session_stats()`
+
+Aggregate statistics from multiple sessions.
+
+```python
+def aggregate_session_stats(all_sessions: list[UserSessionStats]) -> dict
+```
+
+Returns dictionary with aggregated metrics including:
+- Total conversations, messages, tokens across all sessions
+- Combined latency statistics (min, max, average)
+- Throughput metrics (conversations/minute, tokens/second)
+- List of all models used
+- Success and failure counts
+
+#### `print_aggregate_report()`
+
+Print aggregated statistics from multiple sessions.
+
+```python
+def print_aggregate_report(stats: dict) -> None
+```
+
+Displays comprehensive report with:
+- Number of sessions and total duration
+- Aggregate conversation statistics
+- Combined message and token statistics
+- Throughput metrics
+- Latency statistics
+- All models used across sessions
+
 ## Testing
 
 Run the test suite:
@@ -289,17 +427,20 @@ Run the test suite:
 # Install dev dependencies (includes pytest-cov)
 uv sync --extra dev
 
-# Run all tests (25 total)
-uv run pytest test_stresser.py test_session.py -v
+# Run all tests (36 total)
+uv run pytest test_stresser.py test_session.py test_multi_session.py -v
 
 # Run with coverage report
-uv run pytest test_stresser.py test_session.py --cov=stresser --cov-report=term-missing
+uv run pytest test_stresser.py test_session.py test_multi_session.py --cov=stresser --cov=multi_session --cov-report=term-missing
 
 # Run only session simulation tests
 uv run pytest test_session.py -v
+
+# Run only multi-session tests
+uv run pytest test_multi_session.py -v
 ```
 
-The test suite includes (25 tests total):
+The test suite includes (36 tests total):
 
 **Core functionality tests (test_stresser.py - 13 tests):**
 - Sleep time calculation tests
@@ -317,6 +458,14 @@ The test suite includes (25 tests total):
 - Error tracking and reporting
 - Report formatting
 
+**Multi-session tests (test_multi_session.py - 11 tests):**
+- Single session execution
+- Multiple concurrent sessions
+- Session failure handling
+- Statistics aggregation across sessions
+- Aggregate report formatting
+- Model tracking across sessions
+
 ## Project Structure
 
 ```
@@ -325,8 +474,10 @@ BAG-Stresser/
 ├── .gitignore                # Git ignore rules
 ├── pyproject.toml            # Project configuration and dependencies
 ├── stresser.py               # Core stress testing functionality
+├── multi_session.py          # Multi-session concurrent execution script
 ├── test_stresser.py          # Core functionality tests (13 tests)
 ├── test_session.py           # Session simulation tests (12 tests)
+├── test_multi_session.py     # Multi-session tests (11 tests)
 ├── example_stresser.py       # Single conversation example
 ├── example_session.py        # User session simulation example
 ├── main.py                   # Main entry point
