@@ -11,13 +11,20 @@ BAG-Stresser is designed to test and measure the performance of LLM APIs by simu
 - **Conversation Replay**: Load and replay conversations from JSON files
 - **User Session Simulation**: Simulate realistic user behavior with repeated stress tests over time
 - **Async/Await Architecture**: Built with asyncio for efficient concurrent execution
+- **Concurrent Conversation Execution**: Run multiple conversations in parallel within a single session for maximum throughput
+- **Highly Optimized for Concurrency**:
+  - Non-blocking file I/O using thread pools
+  - Async model fetching
+  - LLM client caching (avoids repeated initialization)
+  - Async directory scanning
+  - Minimizes all blocking operations
 - **Progressive Conversation Building**: Simulates natural conversation flow by building context progressively
 - **Intelligent Timing**: Uses async sleep between messages based on message length to simulate realistic user behavior
 - **Random Parameter Selection**: Automatically varies conversations, models, and temperature for realistic testing
 - **Comprehensive Statistics**: Tracks tokens (input/output), latency (min/max/average), success rates, and more
 - **Configurable**: Control model parameters, message limits, and API endpoints
 - **No Token Limits**: LLMs can generate responses of unlimited length
-- **Well-Tested**: Comprehensive unit test suite with 25 tests
+- **Well-Tested**: Comprehensive unit test suite with 37 tests
 
 ## Installation
 
@@ -96,7 +103,8 @@ async def main():
         model_name=None,  # None = random from API, or specify a model
         api_key='your_api_key',
         api_base='https://api.openai.com/v1',
-        temperature_range=(0.5, 1.0)  # Random temperature range
+        temperature_range=(0.5, 1.0),  # Random temperature range
+        concurrency=3  # Run 3 conversations concurrently for better throughput
     )
 
     # Print comprehensive report
@@ -107,6 +115,7 @@ asyncio.run(main())
 
 **Features:**
 - **Time-based execution**: Runs continuously for specified duration
+- **Concurrent execution**: Run multiple conversations in parallel (default: 1, configurable)
 - **Random selection**: Automatically varies conversations, models, and temperature
 - **Aggregate statistics**: Collects metrics across all conversations
 - **Success rate tracking**: Monitors failures and errors
@@ -299,7 +308,8 @@ async def simulate_user_session(
     model_name: Optional[str] = None,
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
-    temperature_range: tuple[float, float] = (0.5, 1.0)
+    temperature_range: tuple[float, float] = (0.5, 1.0),
+    concurrency: int = 1
 ) -> UserSessionStats
 ```
 
@@ -310,6 +320,7 @@ async def simulate_user_session(
 - `api_key`: API key (required)
 - `api_base`: API base URL (required)
 - `temperature_range`: Min and max temperature for random selection (default: (0.5, 1.0))
+- `concurrency`: Number of conversations to run concurrently (default: 1)
 
 **Returns:** `UserSessionStats` object containing:
 - `session_start`: Start timestamp
@@ -331,11 +342,19 @@ async def simulate_user_session(
 
 **Behavior:**
 - Runs continuously until `duration_seconds` expires
+- When `concurrency=1`: Runs conversations sequentially (original behavior)
+- When `concurrency>1`: Runs multiple conversations in parallel for better throughput
 - Randomly selects a conversation file for each iteration
 - Randomly selects model (if `model_name` is None)
 - Randomly selects temperature within specified range
 - 20% chance of limiting messages (1-3 messages)
 - Aggregates statistics across all runs
+
+**Performance Notes:**
+- Setting `concurrency>1` significantly improves throughput by overlapping I/O wait times
+- Recommended starting point: `concurrency=3` for 3x throughput improvement
+- Higher concurrency may stress the API rate limits
+- Use `multi_session.py` for session-level concurrency (multiple independent sessions)
 
 ### `print_session_report()`
 
@@ -427,7 +446,7 @@ Run the test suite:
 # Install dev dependencies (includes pytest-cov)
 uv sync --extra dev
 
-# Run all tests (36 total)
+# Run all tests (37 total)
 uv run pytest test_stresser.py test_session.py test_multi_session.py -v
 
 # Run with coverage report
@@ -440,7 +459,7 @@ uv run pytest test_session.py -v
 uv run pytest test_multi_session.py -v
 ```
 
-The test suite includes (36 tests total):
+The test suite includes (37 tests total):
 
 **Core functionality tests (test_stresser.py - 13 tests):**
 - Sleep time calculation tests
@@ -450,13 +469,14 @@ The test suite includes (36 tests total):
 - Statistics calculation verification
 - Conversation history building validation
 
-**Session simulation tests (test_session.py - 12 tests):**
+**Session simulation tests (test_session.py - 13 tests):**
 - Model fetching from API
 - Session duration and timing
 - Random parameter selection
 - Statistics aggregation
 - Error tracking and reporting
 - Report formatting
+- Concurrent conversation execution
 
 **Multi-session tests (test_multi_session.py - 11 tests):**
 - Single session execution

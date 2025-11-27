@@ -24,6 +24,7 @@ async def main():
     # Run simulation for 30 seconds (can be adjusted)
     # Default is 60 seconds
     duration = 30
+    concurrency = 3  # Run 3 conversations concurrently for better throughput
 
     if model_name:
         print(f"Using fixed model: {model_name}")
@@ -31,16 +32,18 @@ async def main():
         print("Will randomly select models from API")
 
     print(f"Duration: {duration} seconds")
+    print(f"Concurrency: {concurrency} concurrent conversations")
     print()
 
-    # Run the simulation
+    # Run the simulation with concurrent execution
     stats = await simulate_user_session(
         conversations_dir='conversations',
         duration_seconds=duration,
         model_name=model_name,  # None = random selection
         api_key=api_key,
         api_base=api_base,
-        temperature_range=(0.5, 1.0)  # Random temperature between 0.5 and 1.0
+        temperature_range=(0.5, 1.0),  # Random temperature between 0.5 and 1.0
+        concurrency=concurrency  # Run multiple conversations in parallel
     )
 
     # Print the detailed report

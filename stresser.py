@@ -4,12 +4,26 @@ import asyncio
 import random
 import re
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
+
+# Thread pool for blocking I/O operations
+_io_executor = ThreadPoolExecutor(max_workers=4)
+
+# Cache for LLM clients (avoid repeated initialization)
+_llm_client_cache: Dict[tuple, ChatOpenAI] = {}
+
+
+def clear_llm_cache():
+    """Clear the LLM client cache. Useful for testing."""
+    global _llm_client_cache
+    _llm_client_cache.clear()
 
 
 @dataclass
@@ -57,6 +71,68 @@ def clean_response_content(content: str) -> str:
     cleaned = cleaned.strip()
 
     return cleaned
+
+
+async def load_conversation_async(file_path: str) -> dict:
+    """
+    Load conversation from JSON file asynchronously using thread pool.
+
+    Args:
+        file_path: Path to the conversation JSON file
+
+    Returns:
+        Dictionary containing conversation data
+    """
+    loop = asyncio.get_event_loop()
+
+    def _load_file():
+        with open(file_path, 'r') as f:
+            return json.load(f)
+
+    return await loop.run_in_executor(_io_executor, _load_file)
+
+
+def get_or_create_llm_client(
+    model_name: str,
+    temperature: float,
+    max_tokens: Optional[int],
+    api_key: Optional[str],
+    api_base: Optional[str]
+) -> ChatOpenAI:
+    """
+    Get cached LLM client or create new one if not exists.
+
+    This avoids the overhead of creating a new ChatOpenAI instance
+    for every conversation, significantly improving performance.
+
+    Args:
+        model_name: Model name
+        temperature: Temperature setting
+        max_tokens: Max tokens (None for unlimited)
+        api_key: API key
+        api_base: API base URL
+
+    Returns:
+        Cached or new ChatOpenAI instance
+    """
+    # Create cache key from parameters
+    cache_key = (model_name, temperature, max_tokens, api_key, api_base)
+
+    if cache_key not in _llm_client_cache:
+        llm_kwargs = {
+            'model': model_name,
+            'temperature': temperature,
+        }
+        if max_tokens is not None:
+            llm_kwargs['max_tokens'] = max_tokens
+        if api_key:
+            llm_kwargs['api_key'] = api_key
+        if api_base:
+            llm_kwargs['base_url'] = api_base
+
+        _llm_client_cache[cache_key] = ChatOpenAI(**llm_kwargs)
+
+    return _llm_client_cache[cache_key]
 
 
 def calculate_sleep_time(message_length: int, base_time: float = 0.5, time_per_char: float = 0.01) -> float:
@@ -107,13 +183,13 @@ async def run_conversation_stress_test(
     Returns:
         ConversationStats object with collected statistics
     """
-    # Load conversation from JSON file
+    # Load conversation from JSON file asynchronously
     conversation_path = Path(conversation_file_path)
     if not conversation_path.exists():
         raise FileNotFoundError(f"Conversation file not found: {conversation_file_path}")
 
-    with open(conversation_path, 'r') as f:
-        conversation_data = json.load(f)
+    # Use async file loading to avoid blocking
+    conversation_data = await load_conversation_async(conversation_file_path)
 
     conversation_id = conversation_data.get('conversation_id', conversation_path.stem)
     messages = conversation_data.get('messages', [])
@@ -133,21 +209,15 @@ async def run_conversation_stress_test(
     if messages_to_send == 0:
         return stats
 
-    # Initialize LangChain ChatOpenAI
-    llm_kwargs = {
-        'model': model_name,
-        'temperature': temperature,
-    }
-    # Only set max_tokens if provided (None = no limit)
-    if max_tokens is not None:
-        llm_kwargs['max_tokens'] = max_tokens
-    if api_key:
-        llm_kwargs['api_key'] = api_key
-    if api_base:
-        llm_kwargs['base_url'] = api_base
-
+    # Get or create cached LLM client (avoids repeated initialization overhead)
     try:
-        llm = ChatOpenAI(**llm_kwargs)
+        llm = get_or_create_llm_client(
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            api_key=api_key,
+            api_base=api_base
+        )
 
         # Build conversation history progressively
         conversation_history = []
@@ -249,9 +319,36 @@ class UserSessionStats:
     conversation_stats: List[ConversationStats] = field(default_factory=list)
 
 
+async def get_available_models_async(api_key: str, api_base: str) -> List[str]:
+    """
+    Fetch available models from the API endpoint asynchronously.
+
+    Args:
+        api_key: API key for authentication
+        api_base: Base URL for the API
+
+    Returns:
+        List of available model IDs
+    """
+    loop = asyncio.get_event_loop()
+
+    def _fetch_models():
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url=api_base)
+            models = client.models.list()
+            return [model.id for model in models.data]
+        except Exception as e:
+            # Fallback to some common models if API call fails
+            print(f"Warning: Could not fetch models from API: {e}")
+            return ['gpt-3.5-turbo', 'gpt-4']
+
+    return await loop.run_in_executor(_io_executor, _fetch_models)
+
+
 def get_available_models(api_key: str, api_base: str) -> List[str]:
     """
-    Fetch available models from the API endpoint.
+    Fetch available models from the API endpoint (synchronous wrapper for compatibility).
 
     Args:
         api_key: API key for authentication
@@ -277,7 +374,8 @@ async def simulate_user_session(
     model_name: Optional[str] = None,
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
-    temperature_range: tuple[float, float] = (0.5, 1.0)
+    temperature_range: tuple[float, float] = (0.5, 1.0),
+    concurrency: int = 1
 ) -> UserSessionStats:
     """
     Simulate a user running stress tests repeatedly for a specified duration.
@@ -292,6 +390,7 @@ async def simulate_user_session(
         api_key: API key (required)
         api_base: API base URL (required)
         temperature_range: Range for random temperature selection (min, max)
+        concurrency: Number of conversations to run concurrently (default: 1)
 
     Returns:
         UserSessionStats object with aggregated results
@@ -299,19 +398,24 @@ async def simulate_user_session(
     if not api_key or not api_base:
         raise ValueError("api_key and api_base are required")
 
-    # Get list of conversation files
-    conv_path = Path(conversations_dir)
-    if not conv_path.exists():
-        raise FileNotFoundError(f"Conversations directory not found: {conversations_dir}")
+    # Get list of conversation files (run in thread pool to avoid blocking)
+    loop = asyncio.get_event_loop()
 
-    conversation_files = list(conv_path.glob('*.json'))
-    if not conversation_files:
-        raise FileNotFoundError(f"No conversation files found in {conversations_dir}")
+    def _scan_conversations():
+        conv_path = Path(conversations_dir)
+        if not conv_path.exists():
+            raise FileNotFoundError(f"Conversations directory not found: {conversations_dir}")
+        files = list(conv_path.glob('*.json'))
+        if not files:
+            raise FileNotFoundError(f"No conversation files found in {conversations_dir}")
+        return files
 
-    # Get available models if model_name not specified
+    conversation_files = await loop.run_in_executor(_io_executor, _scan_conversations)
+
+    # Get available models asynchronously if model_name not specified
     available_models = None
     if model_name is None:
-        available_models = get_available_models(api_key, api_base)
+        available_models = await get_available_models_async(api_key, api_base)
         if not available_models:
             raise ValueError("Could not determine available models")
 
@@ -328,54 +432,139 @@ async def simulate_user_session(
         print(f"Using model: {model_name}")
     else:
         print(f"Randomly selecting from {len(available_models)} available models")
+    print(f"Concurrency level: {concurrency} concurrent conversation(s)")
     print("-" * 60)
 
-    iteration = 0
-    while time.time() < end_time:
-        iteration += 1
+    if concurrency == 1:
+        # Sequential execution (original behavior)
+        iteration = 0
+        while time.time() < end_time:
+            iteration += 1
 
-        # Randomly select conversation
-        conversation_file = random.choice(conversation_files)
+            # Randomly select conversation
+            conversation_file = random.choice(conversation_files)
 
-        # Randomly select model if not specified
-        selected_model = model_name if model_name else random.choice(available_models)
-        models_used.add(selected_model)
+            # Randomly select model if not specified
+            selected_model = model_name if model_name else random.choice(available_models)
+            models_used.add(selected_model)
 
-        # Randomly select temperature within range
-        temperature = random.uniform(*temperature_range)
+            # Randomly select temperature within range
+            temperature = random.uniform(*temperature_range)
 
-        # Randomly decide whether to limit messages (20% chance of limiting)
-        max_messages = None
-        if random.random() < 0.2:
-            max_messages = random.randint(1, 3)
+            # Randomly decide whether to limit messages (20% chance of limiting)
+            max_messages = None
+            if random.random() < 0.2:
+                max_messages = random.randint(1, 3)
 
-        print(f"[{iteration}] Running: {conversation_file.name} | Model: {selected_model} | Temp: {temperature:.2f}", end=" ")
+            print(f"[{iteration}] Running: {conversation_file.name} | Model: {selected_model} | Temp: {temperature:.2f}", end=" ")
 
-        try:
-            # Run the stress test
-            stats = await run_conversation_stress_test(
-                conversation_file_path=str(conversation_file),
-                model_name=selected_model,
-                temperature=temperature,
-                max_tokens=None,  # Always unlimited
-                max_messages=max_messages,
-                api_key=api_key,
-                api_base=api_base
+            try:
+                # Run the stress test
+                stats = await run_conversation_stress_test(
+                    conversation_file_path=str(conversation_file),
+                    model_name=selected_model,
+                    temperature=temperature,
+                    max_tokens=None,  # Always unlimited
+                    max_messages=max_messages,
+                    api_key=api_key,
+                    api_base=api_base
+                )
+
+                all_stats.append(stats)
+
+                if stats.error:
+                    print(f"✗ Error: {stats.error[:50]}...")
+                else:
+                    print(f"✓ {stats.total_messages_sent} msgs, {stats.average_latency_seconds:.2f}s avg")
+
+            except Exception as e:
+                print(f"✗ Exception: {str(e)[:50]}...")
+                # Create a failed stats entry
+                failed_stats = ConversationStats(conversation_id=conversation_file.stem)
+                failed_stats.error = str(e)
+                all_stats.append(failed_stats)
+
+    else:
+        # Concurrent execution
+        async def run_single_conversation(conv_id: int):
+            """Run a single conversation as part of concurrent pool."""
+            conversation_file = random.choice(conversation_files)
+            selected_model = model_name if model_name else random.choice(available_models)
+            temperature = random.uniform(*temperature_range)
+            max_messages = None if random.random() >= 0.2 else random.randint(1, 3)
+
+            models_used.add(selected_model)
+
+            print(f"[{conv_id}] Running: {conversation_file.name} | Model: {selected_model} | Temp: {temperature:.2f}", end=" ")
+
+            try:
+                stats = await run_conversation_stress_test(
+                    conversation_file_path=str(conversation_file),
+                    model_name=selected_model,
+                    temperature=temperature,
+                    max_tokens=None,
+                    max_messages=max_messages,
+                    api_key=api_key,
+                    api_base=api_base
+                )
+
+                if stats.error:
+                    print(f"✗ Error: {stats.error[:50]}...")
+                else:
+                    print(f"✓ {stats.total_messages_sent} msgs, {stats.average_latency_seconds:.2f}s avg")
+
+                return stats
+
+            except Exception as e:
+                print(f"✗ Exception: {str(e)[:50]}...")
+                failed_stats = ConversationStats(conversation_id=conversation_file.stem)
+                failed_stats.error = str(e)
+                return failed_stats
+
+        # Manage concurrent task pool
+        pending_tasks = set()
+        conversation_counter = 0
+
+        # Initial burst to fill concurrency slots
+        for _ in range(concurrency):
+            if time.time() >= end_time:
+                break
+            conversation_counter += 1
+            task = asyncio.create_task(run_single_conversation(conversation_counter))
+            pending_tasks.add(task)
+
+        # Main loop: as tasks complete, spawn new ones
+        while pending_tasks and time.time() < end_time:
+            # Wait for at least one task to complete
+            done, pending_tasks = await asyncio.wait(
+                pending_tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=max(0.1, end_time - time.time())
             )
 
-            all_stats.append(stats)
+            # Collect results from completed tasks
+            for task in done:
+                try:
+                    stats = await task
+                    all_stats.append(stats)
+                except Exception as e:
+                    print(f"✗ Task exception: {str(e)[:50]}...")
 
-            if stats.error:
-                print(f"✗ Error: {stats.error[:50]}...")
-            else:
-                print(f"✓ {stats.total_messages_sent} msgs, {stats.average_latency_seconds:.2f}s avg")
+            # Spawn new tasks to maintain concurrency level
+            while len(pending_tasks) < concurrency and time.time() < end_time:
+                conversation_counter += 1
+                task = asyncio.create_task(run_single_conversation(conversation_counter))
+                pending_tasks.add(task)
 
-        except Exception as e:
-            print(f"✗ Exception: {str(e)[:50]}...")
-            # Create a failed stats entry
-            failed_stats = ConversationStats(conversation_id=conversation_file.stem)
-            failed_stats.error = str(e)
-            all_stats.append(failed_stats)
+        # Wait for any remaining tasks to complete
+        if pending_tasks:
+            done, _ = await asyncio.wait(pending_tasks, timeout=10.0)
+            for task in done:
+                try:
+                    stats = await task
+                    all_stats.append(stats)
+                except Exception as e:
+                    print(f"✗ Task exception: {str(e)[:50]}...")
 
     session_end = datetime.now()
 

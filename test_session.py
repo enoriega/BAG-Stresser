@@ -91,7 +91,7 @@ class TestSimulateUserSession:
             )
 
     @pytest.mark.asyncio
-    @patch('stresser.get_available_models')
+    @patch('stresser.get_available_models_async', new_callable=AsyncMock)
     @patch('stresser.run_conversation_stress_test', new_callable=AsyncMock)
     @patch('stresser.time.time')
     @patch('builtins.print')
@@ -100,7 +100,7 @@ class TestSimulateUserSession:
         mock_print,
         mock_time,
         mock_run_test,
-        mock_get_models,
+        mock_get_models_async,
         tmp_path
     ):
         """Test a short session with fixed model."""
@@ -145,10 +145,10 @@ class TestSimulateUserSession:
         assert result.models_used == ['test-model']
         assert mock_run_test.call_count == 2
         # Should not call get_available_models when model is specified
-        mock_get_models.assert_not_called()
+        mock_get_models_async.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch('stresser.get_available_models')
+    @patch('stresser.get_available_models_async', new_callable=AsyncMock)
     @patch('stresser.run_conversation_stress_test', new_callable=AsyncMock)
     @patch('stresser.time.time')
     @patch('builtins.print')
@@ -157,7 +157,7 @@ class TestSimulateUserSession:
         mock_print,
         mock_time,
         mock_run_test,
-        mock_get_models,
+        mock_get_models_async,
         tmp_path
     ):
         """Test session with random model selection."""
@@ -166,7 +166,7 @@ class TestSimulateUserSession:
         conv_file.write_text('{"conversation_id": "test", "messages": []}')
 
         # Mock available models
-        mock_get_models.return_value = ['model-a', 'model-b']
+        mock_get_models_async.return_value = ['model-a', 'model-b']
 
         # Mock time (1 iteration)
         start_time = 1000.0
@@ -195,13 +195,13 @@ class TestSimulateUserSession:
         )
 
         # Verify get_available_models was called
-        mock_get_models.assert_called_once_with('test_key', 'https://test.api')
+        mock_get_models_async.assert_called_once_with('test_key', 'https://test.api')
         # Verify one of the models was used
         assert len(result.models_used) == 1
         assert result.models_used[0] in ['model-a', 'model-b']
 
     @pytest.mark.asyncio
-    @patch('stresser.get_available_models')
+    @patch('stresser.get_available_models_async', new_callable=AsyncMock)
     @patch('stresser.run_conversation_stress_test', new_callable=AsyncMock)
     @patch('stresser.time.time')
     @patch('builtins.print')
@@ -210,7 +210,7 @@ class TestSimulateUserSession:
         mock_print,
         mock_time,
         mock_run_test,
-        mock_get_models,
+        mock_get_models_async,
         tmp_path
     ):
         """Test that errors are properly tracked."""
@@ -248,7 +248,7 @@ class TestSimulateUserSession:
         assert result.total_messages_sent == 0  # None successful
 
     @pytest.mark.asyncio
-    @patch('stresser.get_available_models')
+    @patch('stresser.get_available_models_async', new_callable=AsyncMock)
     @patch('stresser.run_conversation_stress_test', new_callable=AsyncMock)
     @patch('stresser.time.time')
     @patch('builtins.print')
@@ -257,7 +257,7 @@ class TestSimulateUserSession:
         mock_print,
         mock_time,
         mock_run_test,
-        mock_get_models,
+        mock_get_models_async,
         tmp_path
     ):
         """Test that statistics are correctly aggregated."""
@@ -323,17 +323,17 @@ class TestSimulateUserSession:
         assert abs(result.average_latency_seconds - 1.417) < 0.01
 
     @pytest.mark.asyncio
-    @patch('stresser.get_available_models')
+    @patch('stresser.get_available_models_async', new_callable=AsyncMock)
     @patch('stresser.time.time')
     @patch('builtins.print')
-    async def test_no_available_models(self, mock_print, mock_time, mock_get_models, tmp_path):
+    async def test_no_available_models(self, mock_print, mock_time, mock_get_models_async, tmp_path):
         """Test that ValueError is raised when no models available."""
         # Create test conversation file
         conv_file = tmp_path / "test_conv.json"
         conv_file.write_text('{"conversation_id": "test", "messages": []}')
 
         # Mock no models available
-        mock_get_models.return_value = []
+        mock_get_models_async.return_value = []
 
         with pytest.raises(ValueError, match="Could not determine available models"):
             await simulate_user_session(
@@ -343,6 +343,66 @@ class TestSimulateUserSession:
                 api_key='test_key',
                 api_base='https://test.api'
             )
+
+    @pytest.mark.asyncio
+    @patch('stresser.get_available_models_async', new_callable=AsyncMock)
+    @patch('stresser.run_conversation_stress_test', new_callable=AsyncMock)
+    @patch('stresser.time.time')
+    @patch('builtins.print')
+    async def test_concurrent_execution(
+        self,
+        mock_print,
+        mock_time,
+        mock_run_test,
+        mock_get_models_async,
+        tmp_path
+    ):
+        """Test concurrent conversation execution with concurrency > 1."""
+        # Create test conversation file
+        conv_file = tmp_path / "test_conv.json"
+        conv_file.write_text('{"conversation_id": "test", "messages": []}')
+
+        # Mock time to allow sufficient duration
+        start_time = 1000.0
+        mock_time.side_effect = [
+            start_time,  # Initial start
+            start_time + 0.1,  # First check
+            start_time + 0.2,  # Second check
+            start_time + 0.3,  # Third check
+            start_time + 5.0,  # Exit (exceeded duration)
+        ]
+
+        # Create mock stats
+        def create_mock_stats(conv_id):
+            stats = ConversationStats(conversation_id=f'test{conv_id}')
+            stats.total_messages_sent = 3
+            stats.total_tokens = 50
+            stats.total_tokens_input = 20
+            stats.total_tokens_output = 30
+            stats.message_latencies = [1.0]
+            return stats
+
+        # Mock multiple successful runs
+        mock_run_test.side_effect = [create_mock_stats(i) for i in range(10)]
+
+        # Run session with concurrency=3
+        result = await simulate_user_session(
+            conversations_dir=str(tmp_path),
+            duration_seconds=2,
+            model_name='test-model',
+            api_key='test_key',
+            api_base='https://test.api',
+            concurrency=3  # Run 3 conversations concurrently
+        )
+
+        # Verify that conversations ran
+        assert result.total_conversations >= 3
+        assert result.successful_conversations >= 3
+        assert mock_run_test.call_count >= 3
+
+        # Verify concurrency message was printed
+        print_output = ' '.join([str(call) for call in mock_print.call_args_list])
+        assert 'Concurrency level: 3' in print_output
 
 
 class TestPrintSessionReport:
