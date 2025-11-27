@@ -10,8 +10,9 @@ BAG-Stresser is designed to test and measure the performance of LLM APIs by simu
 
 - **Conversation Replay**: Load and replay conversations from JSON files
 - **User Session Simulation**: Simulate realistic user behavior with repeated stress tests over time
+- **Async/Await Architecture**: Built with asyncio for efficient concurrent execution
 - **Progressive Conversation Building**: Simulates natural conversation flow by building context progressively
-- **Intelligent Timing**: Sleeps between messages based on message length to simulate realistic user behavior
+- **Intelligent Timing**: Uses async sleep between messages based on message length to simulate realistic user behavior
 - **Random Parameter Selection**: Automatically varies conversations, models, and temperature for realistic testing
 - **Comprehensive Statistics**: Tracks tokens (input/output), latency (min/max/average), success rates, and more
 - **Configurable**: Control model parameters, message limits, and API endpoints
@@ -51,21 +52,25 @@ MAX_TOKENS=500
 ### Basic Example
 
 ```python
+import asyncio
 from stresser import run_conversation_stress_test
 
-stats = run_conversation_stress_test(
-    conversation_file_path='conversations/conversation_01.json',
-    model_name='gpt-3.5-turbo',
-    temperature=0.7,
-    max_tokens=None,  # No limit - let LLM generate as much as it wants
-    max_messages=None,  # Send all messages
-    api_key='your_api_key',
-    api_base='https://api.openai.com/v1'
-)
+async def main():
+    stats = await run_conversation_stress_test(
+        conversation_file_path='conversations/conversation_01.json',
+        model_name='gpt-3.5-turbo',
+        temperature=0.7,
+        max_tokens=None,  # No limit - let LLM generate as much as it wants
+        max_messages=None,  # Send all messages
+        api_key='your_api_key',
+        api_base='https://api.openai.com/v1'
+    )
 
-print(f"Total messages: {stats.total_messages_sent}")
-print(f"Average latency: {stats.average_latency_seconds:.3f}s")
-print(f"Total tokens: {stats.total_tokens}")
+    print(f"Total messages: {stats.total_messages_sent}")
+    print(f"Average latency: {stats.average_latency_seconds:.3f}s")
+    print(f"Total tokens: {stats.total_tokens}")
+
+asyncio.run(main())
 ```
 
 ### Running the Example Script
@@ -79,21 +84,25 @@ uv run python example_stresser.py
 Simulate a realistic user session with repeated stress tests over a specified duration:
 
 ```python
+import asyncio
 from stresser import simulate_user_session, print_session_report
 
-# Run simulation for 60 seconds (default)
-# Randomly selects conversations, models, and parameters
-stats = simulate_user_session(
-    conversations_dir='conversations',
-    duration_seconds=60,  # How long to run
-    model_name=None,  # None = random from API, or specify a model
-    api_key='your_api_key',
-    api_base='https://api.openai.com/v1',
-    temperature_range=(0.5, 1.0)  # Random temperature range
-)
+async def main():
+    # Run simulation for 60 seconds (default)
+    # Randomly selects conversations, models, and parameters
+    stats = await simulate_user_session(
+        conversations_dir='conversations',
+        duration_seconds=60,  # How long to run
+        model_name=None,  # None = random from API, or specify a model
+        api_key='your_api_key',
+        api_base='https://api.openai.com/v1',
+        temperature_range=(0.5, 1.0)  # Random temperature range
+    )
 
-# Print comprehensive report
-print_session_report(stats)
+    # Print comprehensive report
+    print_session_report(stats)
+
+asyncio.run(main())
 ```
 
 **Features:**
@@ -163,7 +172,7 @@ The application will:
 1. Send the first user message
 2. Receive a response from the API
 3. Replace the API response with the scripted assistant response
-4. Sleep for a time proportional to the next message length
+4. Async sleep for a time proportional to the next message length
 5. Send the conversation history + next user message
 6. Repeat until all messages are sent or `max_messages` is reached
 
@@ -171,10 +180,10 @@ The application will:
 
 ### `run_conversation_stress_test()`
 
-Run a single conversation stress test.
+Run a single conversation stress test (async function).
 
 ```python
-def run_conversation_stress_test(
+async def run_conversation_stress_test(
     conversation_file_path: str,
     model_name: str,
     temperature: float,
@@ -209,10 +218,10 @@ def run_conversation_stress_test(
 
 ### `simulate_user_session()`
 
-Simulate a user running multiple stress tests over a time period.
+Simulate a user running multiple stress tests over a time period (async function).
 
 ```python
-def simulate_user_session(
+async def simulate_user_session(
     conversations_dir: str = 'conversations',
     duration_seconds: int = 60,
     model_name: Optional[str] = None,

@@ -1,7 +1,7 @@
 import pytest
 import time
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, AsyncMock
 from datetime import datetime
 
 from stresser import (
@@ -58,40 +58,44 @@ class TestGetAvailableModels:
 class TestSimulateUserSession:
     """Tests for simulate_user_session function."""
 
-    def test_missing_api_credentials(self):
+    @pytest.mark.asyncio
+    async def test_missing_api_credentials(self):
         """Test that ValueError is raised when credentials are missing."""
         with pytest.raises(ValueError, match="api_key and api_base are required"):
-            simulate_user_session(api_key=None, api_base='https://test.api')
+            await simulate_user_session(api_key=None, api_base='https://test.api')
 
         with pytest.raises(ValueError, match="api_key and api_base are required"):
-            simulate_user_session(api_key='key', api_base=None)
+            await simulate_user_session(api_key='key', api_base=None)
 
-    def test_nonexistent_conversations_directory(self):
+    @pytest.mark.asyncio
+    async def test_nonexistent_conversations_directory(self):
         """Test that FileNotFoundError is raised for missing directory."""
         with pytest.raises(FileNotFoundError, match="Conversations directory not found"):
-            simulate_user_session(
+            await simulate_user_session(
                 conversations_dir='/nonexistent/path',
                 api_key='key',
                 api_base='https://test.api'
             )
 
-    def test_empty_conversations_directory(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_empty_conversations_directory(self, tmp_path):
         """Test that FileNotFoundError is raised for empty directory."""
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
 
         with pytest.raises(FileNotFoundError, match="No conversation files found"):
-            simulate_user_session(
+            await simulate_user_session(
                 conversations_dir=str(empty_dir),
                 api_key='key',
                 api_base='https://test.api'
             )
 
+    @pytest.mark.asyncio
     @patch('stresser.get_available_models')
-    @patch('stresser.run_conversation_stress_test')
+    @patch('stresser.run_conversation_stress_test', new_callable=AsyncMock)
     @patch('stresser.time.time')
     @patch('builtins.print')
-    def test_short_duration_session(
+    async def test_short_duration_session(
         self,
         mock_print,
         mock_time,
@@ -124,7 +128,7 @@ class TestSimulateUserSession:
         mock_run_test.return_value = mock_stats
 
         # Run session with fixed model (duration=2 seconds)
-        result = simulate_user_session(
+        result = await simulate_user_session(
             conversations_dir=str(tmp_path),
             duration_seconds=2,
             model_name='test-model',
@@ -143,11 +147,12 @@ class TestSimulateUserSession:
         # Should not call get_available_models when model is specified
         mock_get_models.assert_not_called()
 
+    @pytest.mark.asyncio
     @patch('stresser.get_available_models')
-    @patch('stresser.run_conversation_stress_test')
+    @patch('stresser.run_conversation_stress_test', new_callable=AsyncMock)
     @patch('stresser.time.time')
     @patch('builtins.print')
-    def test_random_model_selection(
+    async def test_random_model_selection(
         self,
         mock_print,
         mock_time,
@@ -181,7 +186,7 @@ class TestSimulateUserSession:
         mock_run_test.return_value = mock_stats
 
         # Run without specifying model
-        result = simulate_user_session(
+        result = await simulate_user_session(
             conversations_dir=str(tmp_path),
             duration_seconds=1,
             model_name=None,  # Random selection
@@ -195,11 +200,12 @@ class TestSimulateUserSession:
         assert len(result.models_used) == 1
         assert result.models_used[0] in ['model-a', 'model-b']
 
+    @pytest.mark.asyncio
     @patch('stresser.get_available_models')
-    @patch('stresser.run_conversation_stress_test')
+    @patch('stresser.run_conversation_stress_test', new_callable=AsyncMock)
     @patch('stresser.time.time')
     @patch('builtins.print')
-    def test_error_handling(
+    async def test_error_handling(
         self,
         mock_print,
         mock_time,
@@ -227,7 +233,7 @@ class TestSimulateUserSession:
         mock_run_test.side_effect = [fail_stats]
 
         # Run session
-        result = simulate_user_session(
+        result = await simulate_user_session(
             conversations_dir=str(tmp_path),
             duration_seconds=1,
             model_name='test-model',
@@ -241,11 +247,12 @@ class TestSimulateUserSession:
         assert result.failed_conversations == 1
         assert result.total_messages_sent == 0  # None successful
 
+    @pytest.mark.asyncio
     @patch('stresser.get_available_models')
-    @patch('stresser.run_conversation_stress_test')
+    @patch('stresser.run_conversation_stress_test', new_callable=AsyncMock)
     @patch('stresser.time.time')
     @patch('builtins.print')
-    def test_statistics_aggregation(
+    async def test_statistics_aggregation(
         self,
         mock_print,
         mock_time,
@@ -293,7 +300,7 @@ class TestSimulateUserSession:
         mock_run_test.side_effect = [stats1, stats2, stats3]
 
         # Run session
-        result = simulate_user_session(
+        result = await simulate_user_session(
             conversations_dir=str(tmp_path),
             duration_seconds=2,
             model_name='test-model',
@@ -315,10 +322,11 @@ class TestSimulateUserSession:
         assert result.max_latency_seconds == 2.5
         assert abs(result.average_latency_seconds - 1.417) < 0.01
 
+    @pytest.mark.asyncio
     @patch('stresser.get_available_models')
     @patch('stresser.time.time')
     @patch('builtins.print')
-    def test_no_available_models(self, mock_print, mock_time, mock_get_models, tmp_path):
+    async def test_no_available_models(self, mock_print, mock_time, mock_get_models, tmp_path):
         """Test that ValueError is raised when no models available."""
         # Create test conversation file
         conv_file = tmp_path / "test_conv.json"
@@ -328,7 +336,7 @@ class TestSimulateUserSession:
         mock_get_models.return_value = []
 
         with pytest.raises(ValueError, match="Could not determine available models"):
-            simulate_user_session(
+            await simulate_user_session(
                 conversations_dir=str(tmp_path),
                 duration_seconds=1,
                 model_name=None,

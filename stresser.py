@@ -1,5 +1,6 @@
 import json
 import time
+import asyncio
 import random
 import re
 from pathlib import Path
@@ -77,7 +78,7 @@ def calculate_sleep_time(message_length: int, base_time: float = 0.5, time_per_c
     return calculated_time * randomness
 
 
-def run_conversation_stress_test(
+async def run_conversation_stress_test(
     conversation_file_path: str,
     model_name: str,
     temperature: float,
@@ -207,7 +208,7 @@ def run_conversation_stress_test(
                     next_msg_length = len(user_messages[idx + 1]['content'])
                     sleep_time = calculate_sleep_time(next_msg_length)
                     stats.total_sleep_time_seconds += sleep_time
-                    time.sleep(sleep_time)
+                    await asyncio.sleep(sleep_time)
 
             except Exception as e:
                 stats.error = f"Error during message {idx + 1}: {str(e)}"
@@ -270,7 +271,7 @@ def get_available_models(api_key: str, api_base: str) -> List[str]:
         return ['gpt-3.5-turbo', 'gpt-4']
 
 
-def simulate_user_session(
+async def simulate_user_session(
     conversations_dir: str = 'conversations',
     duration_seconds: int = 60,
     model_name: Optional[str] = None,
@@ -352,7 +353,7 @@ def simulate_user_session(
 
         try:
             # Run the stress test
-            stats = run_conversation_stress_test(
+            stats = await run_conversation_stress_test(
                 conversation_file_path=str(conversation_file),
                 model_name=selected_model,
                 temperature=temperature,

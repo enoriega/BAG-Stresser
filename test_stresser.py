@@ -1,7 +1,8 @@
 import json
 import pytest
+import asyncio
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, AsyncMock
 from langchain_core.messages import AIMessage
 
 from stresser import (
@@ -105,19 +106,21 @@ class TestCalculateSleepTime:
 class TestRunConversationStressTest:
     """Tests for the run_conversation_stress_test function."""
 
-    def test_file_not_found(self):
+    @pytest.mark.asyncio
+    async def test_file_not_found(self):
         """Test that FileNotFoundError is raised for non-existent file."""
         with pytest.raises(FileNotFoundError):
-            run_conversation_stress_test(
+            await run_conversation_stress_test(
                 conversation_file_path="/nonexistent/file.json",
                 model_name="gpt-3.5-turbo",
                 temperature=0.7,
                 max_tokens=100
             )
 
+    @pytest.mark.asyncio
     @patch('stresser.ChatOpenAI')
-    @patch('stresser.time.sleep')
-    def test_successful_conversation(self, mock_sleep, mock_chat_openai, sample_conversation_file):
+    @patch('asyncio.sleep', new_callable=AsyncMock)
+    async def test_successful_conversation(self, mock_sleep, mock_chat_openai, sample_conversation_file):
         """Test a successful conversation with all messages."""
         # Setup mock LLM
         mock_llm_instance = Mock()
@@ -140,7 +143,7 @@ class TestRunConversationStressTest:
         mock_llm_instance.invoke.side_effect = mock_responses
 
         # Run the test
-        stats = run_conversation_stress_test(
+        stats = await run_conversation_stress_test(
             conversation_file_path=str(sample_conversation_file),
             model_name="gpt-3.5-turbo",
             temperature=0.7,
@@ -162,9 +165,10 @@ class TestRunConversationStressTest:
         # Should sleep 2 times (between 3 messages)
         assert mock_sleep.call_count == 2
 
+    @pytest.mark.asyncio
     @patch('stresser.ChatOpenAI')
-    @patch('stresser.time.sleep')
-    def test_max_messages_limit(self, mock_sleep, mock_chat_openai, sample_conversation_file):
+    @patch('asyncio.sleep', new_callable=AsyncMock)
+    async def test_max_messages_limit(self, mock_sleep, mock_chat_openai, sample_conversation_file):
         """Test that max_messages parameter limits the number of messages sent."""
         mock_llm_instance = Mock()
         mock_chat_openai.return_value = mock_llm_instance
@@ -182,7 +186,7 @@ class TestRunConversationStressTest:
         mock_llm_instance.invoke.return_value = mock_response
 
         # Run with max_messages=2
-        stats = run_conversation_stress_test(
+        stats = await run_conversation_stress_test(
             conversation_file_path=str(sample_conversation_file),
             model_name="gpt-3.5-turbo",
             temperature=0.7,
@@ -198,9 +202,10 @@ class TestRunConversationStressTest:
         # Should sleep 1 time (between 2 messages)
         assert mock_sleep.call_count == 1
 
+    @pytest.mark.asyncio
     @patch('stresser.ChatOpenAI')
-    @patch('stresser.time.sleep')
-    def test_single_message_conversation(self, mock_sleep, mock_chat_openai, sample_single_message_conversation):
+    @patch('asyncio.sleep', new_callable=AsyncMock)
+    async def test_single_message_conversation(self, mock_sleep, mock_chat_openai, sample_single_message_conversation):
         """Test conversation with only one message."""
         mock_llm_instance = Mock()
         mock_chat_openai.return_value = mock_llm_instance
@@ -216,7 +221,7 @@ class TestRunConversationStressTest:
         }
         mock_llm_instance.invoke.return_value = mock_response
 
-        stats = run_conversation_stress_test(
+        stats = await run_conversation_stress_test(
             conversation_file_path=str(sample_single_message_conversation),
             model_name="gpt-3.5-turbo",
             temperature=0.7,
@@ -230,12 +235,13 @@ class TestRunConversationStressTest:
         # Should not sleep after the last message
         assert mock_sleep.call_count == 0
 
+    @pytest.mark.asyncio
     @patch('stresser.ChatOpenAI')
-    def test_llm_initialization_error(self, mock_chat_openai, sample_conversation_file):
+    async def test_llm_initialization_error(self, mock_chat_openai, sample_conversation_file):
         """Test handling of LLM initialization error."""
         mock_chat_openai.side_effect = Exception("API key invalid")
 
-        stats = run_conversation_stress_test(
+        stats = await run_conversation_stress_test(
             conversation_file_path=str(sample_conversation_file),
             model_name="gpt-3.5-turbo",
             temperature=0.7,
@@ -247,9 +253,10 @@ class TestRunConversationStressTest:
         assert "Error initializing LLM" in stats.error
         assert stats.total_messages_sent == 0
 
+    @pytest.mark.asyncio
     @patch('stresser.ChatOpenAI')
-    @patch('stresser.time.sleep')
-    def test_llm_invocation_error(self, mock_sleep, mock_chat_openai, sample_conversation_file):
+    @patch('asyncio.sleep', new_callable=AsyncMock)
+    async def test_llm_invocation_error(self, mock_sleep, mock_chat_openai, sample_conversation_file):
         """Test handling of error during LLM invocation."""
         mock_llm_instance = Mock()
         mock_chat_openai.return_value = mock_llm_instance
@@ -269,7 +276,7 @@ class TestRunConversationStressTest:
             Exception("Rate limit exceeded")
         ]
 
-        stats = run_conversation_stress_test(
+        stats = await run_conversation_stress_test(
             conversation_file_path=str(sample_conversation_file),
             model_name="gpt-3.5-turbo",
             temperature=0.7,
@@ -283,9 +290,10 @@ class TestRunConversationStressTest:
         assert stats.error is not None
         assert "Error during message 2" in stats.error
 
+    @pytest.mark.asyncio
     @patch('stresser.ChatOpenAI')
-    @patch('stresser.time.sleep')
-    def test_statistics_calculation(self, mock_sleep, mock_chat_openai, sample_conversation_file):
+    @patch('asyncio.sleep', new_callable=AsyncMock)
+    async def test_statistics_calculation(self, mock_sleep, mock_chat_openai, sample_conversation_file):
         """Test that statistics are calculated correctly."""
         mock_llm_instance = Mock()
         mock_chat_openai.return_value = mock_llm_instance
@@ -306,7 +314,7 @@ class TestRunConversationStressTest:
 
         mock_llm_instance.invoke.side_effect = mock_responses
 
-        stats = run_conversation_stress_test(
+        stats = await run_conversation_stress_test(
             conversation_file_path=str(sample_conversation_file),
             model_name="gpt-3.5-turbo",
             temperature=0.7,
@@ -321,9 +329,10 @@ class TestRunConversationStressTest:
         assert stats.min_latency_seconds > 0
         assert len(stats.message_latencies) == 3
 
+    @pytest.mark.asyncio
     @patch('stresser.ChatOpenAI')
-    @patch('stresser.time.sleep')
-    def test_conversation_history_building(self, mock_sleep, mock_chat_openai, sample_conversation_file):
+    @patch('asyncio.sleep', new_callable=AsyncMock)
+    async def test_conversation_history_building(self, mock_sleep, mock_chat_openai, sample_conversation_file):
         """Test that conversation history is built correctly."""
         mock_llm_instance = Mock()
         mock_chat_openai.return_value = mock_llm_instance
@@ -346,7 +355,7 @@ class TestRunConversationStressTest:
 
         mock_llm_instance.invoke.side_effect = capture_history_length
 
-        run_conversation_stress_test(
+        await run_conversation_stress_test(
             conversation_file_path=str(sample_conversation_file),
             model_name="gpt-3.5-turbo",
             temperature=0.7,
@@ -366,14 +375,15 @@ class TestRunConversationStressTest:
         assert history_lengths[1] == 3
         assert history_lengths[2] == 5
 
+    @pytest.mark.asyncio
     @patch('stresser.ChatOpenAI')
-    @patch('stresser.time.sleep')
-    def test_max_messages_zero(self, mock_sleep, mock_chat_openai, sample_conversation_file):
+    @patch('asyncio.sleep', new_callable=AsyncMock)
+    async def test_max_messages_zero(self, mock_sleep, mock_chat_openai, sample_conversation_file):
         """Test that max_messages=0 sends no messages."""
         mock_llm_instance = Mock()
         mock_chat_openai.return_value = mock_llm_instance
 
-        stats = run_conversation_stress_test(
+        stats = await run_conversation_stress_test(
             conversation_file_path=str(sample_conversation_file),
             model_name="gpt-3.5-turbo",
             temperature=0.7,
@@ -385,9 +395,10 @@ class TestRunConversationStressTest:
         assert stats.total_messages_sent == 0
         assert mock_llm_instance.invoke.call_count == 0
 
+    @pytest.mark.asyncio
     @patch('stresser.ChatOpenAI')
-    @patch('stresser.time.sleep')
-    def test_api_parameters_passed(self, mock_sleep, mock_chat_openai, sample_conversation_file):
+    @patch('asyncio.sleep', new_callable=AsyncMock)
+    async def test_api_parameters_passed(self, mock_sleep, mock_chat_openai, sample_conversation_file):
         """Test that API parameters are correctly passed to ChatOpenAI."""
         mock_llm_instance = Mock()
         mock_chat_openai.return_value = mock_llm_instance
@@ -397,7 +408,7 @@ class TestRunConversationStressTest:
         mock_response.response_metadata = {'token_usage': {}}
         mock_llm_instance.invoke.return_value = mock_response
 
-        run_conversation_stress_test(
+        await run_conversation_stress_test(
             conversation_file_path=str(sample_conversation_file),
             model_name="gpt-4",
             temperature=0.9,
