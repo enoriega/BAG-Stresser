@@ -24,7 +24,8 @@ BAG-Stresser is designed to test and measure the performance of LLM APIs by simu
 - **Comprehensive Statistics**: Tracks tokens (input/output), latency (min/max/average), success rates, and more
 - **Configurable**: Control model parameters, message limits, and API endpoints
 - **No Token Limits**: LLMs can generate responses of unlimited length
-- **Well-Tested**: Comprehensive unit test suite with 37 tests
+- **Multiprocessing Support**: True parallelism across CPU cores with worker processes for maximum stress testing
+- **Well-Tested**: Comprehensive unit test suite with 39 tests
 
 ## Installation
 
@@ -151,7 +152,7 @@ uv run python example_session.py
 
 ### Multi-Session Concurrent Execution
 
-Run multiple user sessions concurrently to maximize stress testing throughput:
+Run multiple user sessions concurrently to maximize stress testing throughput. Supports both asyncio-based concurrency (within a single process) and multiprocessing (across multiple CPU cores):
 
 ```bash
 # Run 1 session (default) for 30 seconds
@@ -168,10 +169,17 @@ python multi_session.py --sessions 10 --duration 30 --temp-min 0.3 --temp-max 0.
 
 # Show detailed reports for each individual session
 python multi_session.py --sessions 3 --duration 60 --show-individual
+
+# Use multiprocessing: 4 worker processes, each running 3 sessions = 12 total
+python multi_session.py --sessions 3 --workers 4 --duration 60
+
+# Maximum stress: 5 workers × 5 sessions = 25 concurrent sessions
+python multi_session.py --sessions 5 --workers 5 --duration 30
 ```
 
 **Command-line options:**
-- `--sessions, -s`: Number of concurrent sessions to run (default: 1)
+- `--sessions, -s`: Number of concurrent sessions per worker (default: 1)
+- `--workers, -w`: Number of worker processes (default: 1). Total sessions = sessions × workers
 - `--duration, -d`: Duration in seconds for each session (default: 60)
 - `--conversations-dir, -c`: Directory containing conversation JSON files (default: conversations)
 - `--model, -m`: Model name to use (default: random selection from API)
@@ -181,10 +189,18 @@ python multi_session.py --sessions 3 --duration 60 --show-individual
 
 **Features:**
 - **True concurrency**: All sessions run simultaneously using asyncio.gather()
+- **Multiprocessing support**: Use multiple CPU cores with worker processes (N sessions × M workers)
 - **Aggregate statistics**: Combined metrics across all sessions
 - **Individual reporting**: Optional detailed reports per session
 - **Error tracking**: Monitors and reports failed sessions
 - **Throughput metrics**: Tokens/second and conversations/minute across all sessions
+
+**Multiprocessing Architecture:**
+- When `--workers > 1`, the script spawns M worker processes
+- Each worker process runs N concurrent sessions using asyncio
+- Total concurrent sessions = N × M (e.g., 5 workers × 3 sessions = 15 total)
+- True parallelism across CPU cores for maximum throughput
+- Useful for bypassing Python's GIL and fully utilizing multi-core systems
 
 **Example output:**
 ```
@@ -407,6 +423,72 @@ async def run_multi_session(
 - Returns only successful session results
 - Reports failed sessions with error messages
 
+#### `run_with_multiprocessing()`
+
+Run multiple worker processes, each running multiple sessions (synchronous function).
+
+```python
+def run_with_multiprocessing(
+    num_workers: int,
+    num_sessions_per_worker: int,
+    duration: int,
+    conversations_dir: str,
+    model_name: str = None,
+    api_key: str = None,
+    api_base: str = None,
+    temperature_range: tuple[float, float] = (0.5, 1.0)
+) -> list[UserSessionStats]
+```
+
+**Parameters:**
+- `num_workers`: Number of worker processes (M)
+- `num_sessions_per_worker`: Number of concurrent sessions per worker (N)
+- `duration`: Duration in seconds for each session
+- `conversations_dir`: Directory containing conversation files
+- `model_name`: Model to use (None = random selection)
+- `api_key`: API key
+- `api_base`: API base URL
+- `temperature_range`: Temperature range for random selection
+
+**Returns:** Combined list of `UserSessionStats` from all workers
+
+**Behavior:**
+- Spawns M worker processes using multiprocessing.Pool
+- Each worker runs N concurrent sessions using asyncio
+- Total concurrent sessions = N × M
+- Aggregates results from all workers
+- True parallelism across CPU cores
+
+#### `run_worker_process()`
+
+Worker process function that runs multiple sessions in a separate process.
+
+```python
+def run_worker_process(
+    worker_id: int,
+    num_sessions: int,
+    duration: int,
+    conversations_dir: str,
+    model_name: str,
+    api_key: str,
+    api_base: str,
+    temperature_range: tuple[float, float]
+) -> list[UserSessionStats]
+```
+
+**Parameters:**
+- `worker_id`: Unique identifier for this worker
+- `num_sessions`: Number of concurrent sessions this worker should run
+- Other parameters same as `run_multi_session()`
+
+**Returns:** List of `UserSessionStats` from this worker
+
+**Behavior:**
+- Executed in a separate process
+- Creates new event loop for the process
+- Calls `run_multi_session()` to run N concurrent sessions
+- Handles exceptions and returns results to main process
+
 #### `aggregate_session_stats()`
 
 Aggregate statistics from multiple sessions.
@@ -446,7 +528,7 @@ Run the test suite:
 # Install dev dependencies (includes pytest-cov)
 uv sync --extra dev
 
-# Run all tests (37 total)
+# Run all tests (39 total)
 uv run pytest test_stresser.py test_session.py test_multi_session.py -v
 
 # Run with coverage report
@@ -459,7 +541,7 @@ uv run pytest test_session.py -v
 uv run pytest test_multi_session.py -v
 ```
 
-The test suite includes (37 tests total):
+The test suite includes (39 tests total):
 
 **Core functionality tests (test_stresser.py - 13 tests):**
 - Sleep time calculation tests
@@ -478,13 +560,15 @@ The test suite includes (37 tests total):
 - Report formatting
 - Concurrent conversation execution
 
-**Multi-session tests (test_multi_session.py - 11 tests):**
+**Multi-session tests (test_multi_session.py - 13 tests):**
 - Single session execution
 - Multiple concurrent sessions
 - Session failure handling
 - Statistics aggregation across sessions
 - Aggregate report formatting
 - Model tracking across sessions
+- Multiprocessing worker process execution
+- Multi-worker process coordination
 
 ## Project Structure
 

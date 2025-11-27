@@ -1,13 +1,19 @@
 """
 Run multiple concurrent user sessions for stress testing.
 
-This script launches multiple user sessions in parallel using asyncio,
+This script launches multiple user sessions in parallel using asyncio and multiprocessing,
 allowing for higher throughput stress testing.
+
+With multiprocessing enabled:
+- N = concurrent sessions per process (--sessions)
+- M = number of worker processes (--workers)
+- Total concurrent sessions = N × M
 """
 import os
 import sys
 import asyncio
 import argparse
+import multiprocessing
 from datetime import datetime
 from dotenv import load_dotenv
 from stresser import simulate_user_session, print_session_report, UserSessionStats
@@ -255,10 +261,148 @@ def print_aggregate_report(stats: dict):
     print("=" * 70)
 
 
+def run_worker_process(
+    worker_id: int,
+    num_sessions: int,
+    duration: int,
+    conversations_dir: str,
+    model_name: str,
+    api_key: str,
+    api_base: str,
+    temperature_range: tuple[float, float]
+) -> list[UserSessionStats]:
+    """
+    Worker process function that runs multiple sessions.
+
+    This function is executed in a separate process. It creates a new event loop
+    and runs the async run_multi_session function.
+
+    Args:
+        worker_id: Unique identifier for this worker process
+        num_sessions: Number of concurrent sessions this worker should run
+        duration: Duration in seconds for each session
+        conversations_dir: Directory containing conversation files
+        model_name: Model to use (None = random selection)
+        api_key: API key
+        api_base: API base URL
+        temperature_range: Temperature range for random selection
+
+    Returns:
+        List of UserSessionStats from all sessions in this worker
+    """
+    print(f"\n[Worker {worker_id}] Process started (PID: {os.getpid()})")
+
+    # Create new event loop for this process
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        # Run the async multi-session function
+        results = loop.run_until_complete(
+            run_multi_session(
+                num_sessions=num_sessions,
+                duration=duration,
+                conversations_dir=conversations_dir,
+                model_name=model_name,
+                api_key=api_key,
+                api_base=api_base,
+                temperature_range=temperature_range
+            )
+        )
+        print(f"\n[Worker {worker_id}] Completed with {len(results)} successful sessions")
+        return results
+    except Exception as e:
+        print(f"\n[Worker {worker_id}] Failed with error: {e}")
+        return []
+    finally:
+        loop.close()
+
+
+def run_with_multiprocessing(
+    num_workers: int,
+    num_sessions_per_worker: int,
+    duration: int,
+    conversations_dir: str,
+    model_name: str,
+    api_key: str,
+    api_base: str,
+    temperature_range: tuple[float, float]
+) -> list[UserSessionStats]:
+    """
+    Run multiple worker processes, each running multiple sessions.
+
+    Args:
+        num_workers: Number of worker processes (M)
+        num_sessions_per_worker: Number of concurrent sessions per worker (N)
+        duration: Duration in seconds for each session
+        conversations_dir: Directory containing conversation files
+        model_name: Model to use (None = random selection)
+        api_key: API key
+        api_base: API base URL
+        temperature_range: Temperature range for random selection
+
+    Returns:
+        Combined list of UserSessionStats from all workers
+    """
+    total_sessions = num_workers * num_sessions_per_worker
+
+    print("=" * 70)
+    print("MULTI-PROCESS STRESS TEST")
+    print("=" * 70)
+    print(f"Worker Processes: {num_workers}")
+    print(f"Sessions per Worker: {num_sessions_per_worker}")
+    print(f"Total Concurrent Sessions: {total_sessions} (N×M)")
+    print(f"Duration: {duration} seconds per session")
+    print(f"Model: {model_name if model_name else 'Random selection'}")
+    print(f"Temperature range: {temperature_range[0]} - {temperature_range[1]}")
+    print("=" * 70)
+    print()
+
+    # Create process pool and launch workers
+    print(f"Launching {num_workers} worker processes...")
+    start_time = datetime.now()
+
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        # Create argument tuples for each worker
+        worker_args = [
+            (
+                worker_id,
+                num_sessions_per_worker,
+                duration,
+                conversations_dir,
+                model_name,
+                api_key,
+                api_base,
+                temperature_range
+            )
+            for worker_id in range(1, num_workers + 1)
+        ]
+
+        # Launch all workers and collect results
+        worker_results = pool.starmap(run_worker_process, worker_args)
+
+    end_time = datetime.now()
+
+    # Flatten results from all workers
+    all_results = []
+    for results in worker_results:
+        all_results.extend(results)
+
+    print()
+    print("=" * 70)
+    print("ALL WORKERS COMPLETED")
+    print("=" * 70)
+    print(f"Total elapsed time: {(end_time - start_time).total_seconds():.1f} seconds")
+    print(f"Total successful sessions: {len(all_results)}/{total_sessions}")
+    print()
+
+    return all_results
+
+
 async def main():
     """Main async function."""
     parser = argparse.ArgumentParser(
-        description='Run multiple concurrent user sessions for stress testing',
+        description='Run multiple concurrent user sessions for stress testing with optional multiprocessing',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -273,6 +417,12 @@ Examples:
 
   # Run 10 sessions with custom temperature range
   python multi_session.py --sessions 10 --duration 30 --temp-min 0.3 --temp-max 0.9
+
+  # Use multiprocessing: 4 worker processes, each running 3 sessions = 12 total
+  python multi_session.py --sessions 3 --workers 4 --duration 60
+
+  # Maximum stress: 5 workers × 5 sessions = 25 concurrent sessions
+  python multi_session.py --sessions 5 --workers 5 --duration 30
         """
     )
 
@@ -280,7 +430,13 @@ Examples:
         '--sessions', '-s',
         type=int,
         default=1,
-        help='Number of concurrent sessions to run (default: 1)'
+        help='Number of concurrent sessions per worker (default: 1)'
+    )
+    parser.add_argument(
+        '--workers', '-w',
+        type=int,
+        default=1,
+        help='Number of worker processes (default: 1). Total sessions = sessions × workers'
     )
     parser.add_argument(
         '--duration', '-d',
@@ -334,6 +490,10 @@ Examples:
         print("Error: Number of sessions must be at least 1")
         sys.exit(1)
 
+    if args.workers < 1:
+        print("Error: Number of workers must be at least 1")
+        sys.exit(1)
+
     if args.duration < 1:
         print("Error: Duration must be at least 1 second")
         sys.exit(1)
@@ -342,16 +502,30 @@ Examples:
         print("Error: Invalid temperature range (min must be < max, both in range 0-2.0)")
         sys.exit(1)
 
-    # Run multi-session stress test
-    results = await run_multi_session(
-        num_sessions=args.sessions,
-        duration=args.duration,
-        conversations_dir=args.conversations_dir,
-        model_name=model_name,
-        api_key=api_key,
-        api_base=api_base,
-        temperature_range=(args.temp_min, args.temp_max)
-    )
+    # Choose execution mode based on number of workers
+    if args.workers > 1:
+        # Use multiprocessing
+        results = run_with_multiprocessing(
+            num_workers=args.workers,
+            num_sessions_per_worker=args.sessions,
+            duration=args.duration,
+            conversations_dir=args.conversations_dir,
+            model_name=model_name,
+            api_key=api_key,
+            api_base=api_base,
+            temperature_range=(args.temp_min, args.temp_max)
+        )
+    else:
+        # Use asyncio only (single process)
+        results = await run_multi_session(
+            num_sessions=args.sessions,
+            duration=args.duration,
+            conversations_dir=args.conversations_dir,
+            model_name=model_name,
+            api_key=api_key,
+            api_base=api_base,
+            temperature_range=(args.temp_min, args.temp_max)
+        )
 
     # Print individual session reports if requested
     if args.show_individual and results:

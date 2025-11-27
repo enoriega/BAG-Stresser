@@ -7,6 +7,8 @@ from datetime import datetime
 from multi_session import (
     run_multi_session,
     run_single_session,
+    run_worker_process,
+    run_with_multiprocessing,
     aggregate_session_stats,
     print_aggregate_report
 )
@@ -477,3 +479,132 @@ class TestPrintAggregateReport:
         assert 'claude-3' in all_output
         assert 'gpt-3.5-turbo' in all_output
         assert 'gpt-4' in all_output
+
+
+class TestMultiprocessing:
+    """Tests for multiprocessing functions."""
+
+    @patch('multi_session.run_multi_session', new_callable=AsyncMock)
+    @patch('builtins.print')
+    def test_run_worker_process(self, mock_print, mock_run_multi):
+        """Test that worker process executes correctly."""
+        # Create mock stats
+        mock_stats = UserSessionStats(
+            session_start=datetime.now(),
+            session_end=datetime.now(),
+            duration_seconds=30,
+            total_conversations=5,
+            successful_conversations=5,
+            failed_conversations=0,
+            total_messages_sent=25,
+            total_tokens=1000,
+            total_tokens_input=400,
+            total_tokens_output=600,
+            average_latency_seconds=1.5,
+            min_latency_seconds=0.5,
+            max_latency_seconds=3.0,
+            conversations_per_minute=10.0,
+            models_used=['gpt-3.5-turbo'],
+            conversation_stats=[]
+        )
+        mock_run_multi.return_value = [mock_stats]
+
+        # Run worker process
+        results = run_worker_process(
+            worker_id=1,
+            num_sessions=2,
+            duration=30,
+            conversations_dir='conversations',
+            model_name='gpt-3.5-turbo',
+            api_key='test_key',
+            api_base='https://test.api',
+            temperature_range=(0.5, 1.0)
+        )
+
+        # Verify results
+        assert len(results) == 1
+        assert results[0] == mock_stats
+
+        # Verify worker logging
+        print_output = ' '.join([str(call) for call in mock_print.call_args_list])
+        assert '[Worker 1]' in print_output
+
+    @patch('multi_session.multiprocessing.Pool')
+    @patch('builtins.print')
+    def test_run_with_multiprocessing(self, mock_print, mock_pool_class):
+        """Test multiprocessing execution with multiple workers."""
+        # Create mock stats for different workers
+        mock_stats1 = UserSessionStats(
+            session_start=datetime.now(),
+            session_end=datetime.now(),
+            duration_seconds=30,
+            total_conversations=5,
+            successful_conversations=5,
+            failed_conversations=0,
+            total_messages_sent=25,
+            total_tokens=1000,
+            total_tokens_input=400,
+            total_tokens_output=600,
+            average_latency_seconds=1.5,
+            min_latency_seconds=0.5,
+            max_latency_seconds=3.0,
+            conversations_per_minute=10.0,
+            models_used=['gpt-3.5-turbo'],
+            conversation_stats=[]
+        )
+
+        mock_stats2 = UserSessionStats(
+            session_start=datetime.now(),
+            session_end=datetime.now(),
+            duration_seconds=30,
+            total_conversations=6,
+            successful_conversations=6,
+            failed_conversations=0,
+            total_messages_sent=30,
+            total_tokens=1200,
+            total_tokens_input=480,
+            total_tokens_output=720,
+            average_latency_seconds=1.5,
+            min_latency_seconds=0.5,
+            max_latency_seconds=3.0,
+            conversations_per_minute=12.0,
+            models_used=['gpt-4'],
+            conversation_stats=[]
+        )
+
+        # Mock the pool
+        mock_pool = Mock()
+        mock_pool.__enter__ = Mock(return_value=mock_pool)
+        mock_pool.__exit__ = Mock(return_value=False)
+        mock_pool.starmap = Mock(return_value=[[mock_stats1], [mock_stats2]])
+        mock_pool_class.return_value = mock_pool
+
+        # Run with multiprocessing
+        results = run_with_multiprocessing(
+            num_workers=2,
+            num_sessions_per_worker=3,
+            duration=30,
+            conversations_dir='conversations',
+            model_name='gpt-3.5-turbo',
+            api_key='test_key',
+            api_base='https://test.api',
+            temperature_range=(0.5, 1.0)
+        )
+
+        # Verify results (flattened from all workers)
+        assert len(results) == 2
+        assert results[0] == mock_stats1
+        assert results[1] == mock_stats2
+
+        # Verify pool was created with correct number of processes
+        mock_pool_class.assert_called_once_with(processes=2)
+
+        # Verify starmap was called
+        assert mock_pool.starmap.called
+
+        # Verify output
+        print_output = ' '.join([str(call) for call in mock_print.call_args_list])
+        assert 'MULTI-PROCESS STRESS TEST' in print_output
+        assert 'Worker Processes: 2' in print_output
+        assert 'Sessions per Worker: 3' in print_output
+        assert 'Total Concurrent Sessions: 6' in print_output
