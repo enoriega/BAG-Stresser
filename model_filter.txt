@@ -1,0 +1,26 @@
+# Model Filter File
+#
+# This file contains model names to exclude from stress testing.
+# Add one model name per line. Lines starting with # are ignored.
+# Empty lines are also ignored.
+#
+# Example models to filter out:
+
+# Expensive models
+# gpt-4-32k
+# claude-opus-3
+
+# Legacy or deprecated models
+# gpt-3.5-turbo-0301
+# text-davinci-003
+
+# Models that are too slow
+# llama-70b
+
+# Embedding models (not for chat)
+# text-embedding-ada-002
+# text-embedding-3-small
+
+arena-model
+openai.gpt-oss-20b-1:0
+openai.gpt-oss-120b-1:0

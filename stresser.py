@@ -27,9 +27,23 @@ def clear_llm_cache():
 
 
 @dataclass
+class ErrorDetails:
+    """Detailed information about an error that occurred during a conversation."""
+    model_name: str
+    conversation_file: str
+    step: int  # Which message/step in the conversation failed
+    exception_type: str
+    error_message: str
+    server_error: Optional[str] = None  # Server-specific error if available
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+
+
+@dataclass
 class ConversationStats:
     """Statistics collected during a conversation stress test."""
     conversation_id: str
+    model_name: str = ""
+    conversation_file: str = ""
     total_messages_sent: int = 0
     total_user_messages: int = 0
     total_ai_responses: int = 0
@@ -42,7 +56,8 @@ class ConversationStats:
     max_latency_seconds: float = 0.0
     total_sleep_time_seconds: float = 0.0
     message_latencies: list[float] = field(default_factory=list)
-    error: Optional[str] = None
+    error: Optional[str] = None  # Brief error summary for backwards compatibility
+    error_details: Optional[ErrorDetails] = None  # Detailed error information
 
 
 def clean_response_content(content: str) -> str:
@@ -199,7 +214,11 @@ async def run_conversation_stress_test(
     simulated_responses = [msg for msg in messages if msg['role'] == 'assistant']
 
     # Initialize statistics
-    stats = ConversationStats(conversation_id=conversation_id)
+    stats = ConversationStats(
+        conversation_id=conversation_id,
+        model_name=model_name,
+        conversation_file=conversation_path.name
+    )
 
     # Determine how many messages to send
     messages_to_send = len(user_messages)
@@ -281,7 +300,32 @@ async def run_conversation_stress_test(
                     await asyncio.sleep(sleep_time)
 
             except Exception as e:
-                stats.error = f"Error during message {idx + 1}: {str(e)}"
+                # Extract server error details if available
+                server_error = None
+                error_message = str(e)
+
+                # Try to extract more detailed error information from the exception
+                if hasattr(e, 'response'):
+                    # For HTTP errors with response objects
+                    try:
+                        if hasattr(e.response, 'json'):
+                            error_data = e.response.json()
+                            server_error = json.dumps(error_data)
+                        elif hasattr(e.response, 'text'):
+                            server_error = e.response.text
+                    except:
+                        pass
+
+                # Create detailed error information
+                stats.error_details = ErrorDetails(
+                    model_name=model_name,
+                    conversation_file=conversation_path.name,
+                    step=idx + 1,
+                    exception_type=type(e).__name__,
+                    error_message=error_message,
+                    server_error=server_error
+                )
+                stats.error = f"Error at step {idx + 1}: {type(e).__name__}: {error_message}"
                 break
 
         # Calculate average latency
@@ -293,9 +337,85 @@ async def run_conversation_stress_test(
             stats.min_latency_seconds = 0.0
 
     except Exception as e:
-        stats.error = f"Error initializing LLM: {str(e)}"
+        # Capture detailed error information for initialization failures
+        server_error = None
+        error_message = str(e)
+
+        if hasattr(e, 'response'):
+            try:
+                if hasattr(e.response, 'json'):
+                    error_data = e.response.json()
+                    server_error = json.dumps(error_data)
+                elif hasattr(e.response, 'text'):
+                    server_error = e.response.text
+            except:
+                pass
+
+        stats.error_details = ErrorDetails(
+            model_name=model_name,
+            conversation_file=conversation_path.name,
+            step=0,  # 0 indicates initialization failure
+            exception_type=type(e).__name__,
+            error_message=error_message,
+            server_error=server_error
+        )
+        stats.error = f"Error initializing LLM: {type(e).__name__}: {error_message}"
 
     return stats
+
+
+def load_model_filter(filter_file: str = "model_filter.txt") -> set[str]:
+    """
+    Load model names to filter out from a file.
+
+    The file should contain one model name per line. Lines starting with # are ignored.
+    Empty lines are also ignored.
+
+    Args:
+        filter_file: Path to the filter file (default: model_filter.txt)
+
+    Returns:
+        Set of model names to exclude
+    """
+    if not Path(filter_file).exists():
+        return set()
+
+    filtered_models = set()
+    try:
+        with open(filter_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines and comments
+                if line and not line.startswith('#'):
+                    filtered_models.add(line)
+    except Exception as e:
+        print(f"Warning: Could not read model filter file {filter_file}: {e}")
+
+    return filtered_models
+
+
+def filter_models(models: List[str], filter_file: str = "model_filter.txt") -> List[str]:
+    """
+    Filter out models based on the filter file.
+
+    Args:
+        models: List of model names
+        filter_file: Path to the filter file
+
+    Returns:
+        Filtered list of model names
+    """
+    filtered = load_model_filter(filter_file)
+    if not filtered:
+        return models
+
+    original_count = len(models)
+    filtered_models = [m for m in models if m not in filtered]
+
+    if len(filtered_models) < original_count:
+        print(f"Filtered out {original_count - len(filtered_models)} model(s) based on {filter_file}")
+
+    return filtered_models
 
 
 @dataclass
@@ -319,16 +439,17 @@ class UserSessionStats:
     conversation_stats: List[ConversationStats] = field(default_factory=list)
 
 
-async def get_available_models_async(api_key: str, api_base: str) -> List[str]:
+async def get_available_models_async(api_key: str, api_base: str, filter_file: str = "model_filter.txt") -> List[str]:
     """
-    Fetch available models from the API endpoint asynchronously.
+    Fetch available models from the API endpoint asynchronously and apply filtering.
 
     Args:
         api_key: API key for authentication
         api_base: Base URL for the API
+        filter_file: Path to file containing model names to exclude
 
     Returns:
-        List of available model IDs
+        List of available model IDs (after filtering)
     """
     loop = asyncio.get_event_loop()
 
@@ -337,35 +458,40 @@ async def get_available_models_async(api_key: str, api_base: str) -> List[str]:
             from openai import OpenAI
             client = OpenAI(api_key=api_key, base_url=api_base)
             models = client.models.list()
-            return [model.id for model in models.data]
+            all_models = [model.id for model in models.data]
+            # Apply filter
+            return filter_models(all_models, filter_file)
         except Exception as e:
             # Fallback to some common models if API call fails
             print(f"Warning: Could not fetch models from API: {e}")
-            return ['gpt-3.5-turbo', 'gpt-4']
+            return []
 
     return await loop.run_in_executor(_io_executor, _fetch_models)
 
 
-def get_available_models(api_key: str, api_base: str) -> List[str]:
+def get_available_models(api_key: str, api_base: str, filter_file: str = "model_filter.txt") -> List[str]:
     """
-    Fetch available models from the API endpoint (synchronous wrapper for compatibility).
+    Fetch available models from the API endpoint (synchronous wrapper for compatibility) and apply filtering.
 
     Args:
         api_key: API key for authentication
         api_base: Base URL for the API
+        filter_file: Path to file containing model names to exclude
 
     Returns:
-        List of available model IDs
+        List of available model IDs (after filtering)
     """
     try:
         from openai import OpenAI
         client = OpenAI(api_key=api_key, base_url=api_base)
         models = client.models.list()
-        return [model.id for model in models.data]
+        all_models = [model.id for model in models.data]
+        # Apply filter
+        return filter_models(all_models, filter_file)
     except Exception as e:
         # Fallback to some common models if API call fails
         print(f"Warning: Could not fetch models from API: {e}")
-        return ['gpt-3.5-turbo', 'gpt-4']
+        return []
 
 
 async def simulate_user_session(
@@ -375,7 +501,8 @@ async def simulate_user_session(
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
     temperature_range: tuple[float, float] = (0.5, 1.0),
-    concurrency: int = 1
+    concurrency: int = 1,
+    model_filter_file: str = "model_filter.txt"
 ) -> UserSessionStats:
     """
     Simulate a user running stress tests repeatedly for a specified duration.
@@ -391,6 +518,7 @@ async def simulate_user_session(
         api_base: API base URL (required)
         temperature_range: Range for random temperature selection (min, max)
         concurrency: Number of conversations to run concurrently (default: 1)
+        model_filter_file: Path to file containing model names to exclude (default: model_filter.txt)
 
     Returns:
         UserSessionStats object with aggregated results
@@ -415,7 +543,7 @@ async def simulate_user_session(
     # Get available models asynchronously if model_name not specified
     available_models = None
     if model_name is None:
-        available_models = await get_available_models_async(api_key, api_base)
+        available_models = await get_available_models_async(api_key, api_base, model_filter_file)
         if not available_models:
             raise ValueError("Could not determine available models")
 
@@ -478,10 +606,35 @@ async def simulate_user_session(
                     print(f"✓ {stats.total_messages_sent} msgs, {stats.average_latency_seconds:.2f}s avg")
 
             except Exception as e:
-                print(f"✗ Exception: {str(e)[:50]}...")
-                # Create a failed stats entry
-                failed_stats = ConversationStats(conversation_id=conversation_file.stem)
-                failed_stats.error = str(e)
+                print(f"✗ Exception: {type(e).__name__}: {str(e)[:50]}...")
+                # Create a failed stats entry with detailed error information
+                server_error = None
+                error_message = str(e)
+
+                if hasattr(e, 'response'):
+                    try:
+                        if hasattr(e.response, 'json'):
+                            error_data = e.response.json()
+                            server_error = json.dumps(error_data)
+                        elif hasattr(e.response, 'text'):
+                            server_error = e.response.text
+                    except:
+                        pass
+
+                failed_stats = ConversationStats(
+                    conversation_id=conversation_file.stem,
+                    model_name=selected_model,
+                    conversation_file=conversation_file.name
+                )
+                failed_stats.error_details = ErrorDetails(
+                    model_name=selected_model,
+                    conversation_file=conversation_file.name,
+                    step=-1,  # -1 indicates error occurred before conversation started
+                    exception_type=type(e).__name__,
+                    error_message=error_message,
+                    server_error=server_error
+                )
+                failed_stats.error = f"{type(e).__name__}: {error_message}"
                 all_stats.append(failed_stats)
 
     else:
@@ -516,9 +669,35 @@ async def simulate_user_session(
                 return stats
 
             except Exception as e:
-                print(f"✗ Exception: {str(e)[:50]}...")
-                failed_stats = ConversationStats(conversation_id=conversation_file.stem)
-                failed_stats.error = str(e)
+                print(f"✗ Exception: {type(e).__name__}: {str(e)[:50]}...")
+                # Create a failed stats entry with detailed error information
+                server_error = None
+                error_message = str(e)
+
+                if hasattr(e, 'response'):
+                    try:
+                        if hasattr(e.response, 'json'):
+                            error_data = e.response.json()
+                            server_error = json.dumps(error_data)
+                        elif hasattr(e.response, 'text'):
+                            server_error = e.response.text
+                    except:
+                        pass
+
+                failed_stats = ConversationStats(
+                    conversation_id=conversation_file.stem,
+                    model_name=selected_model,
+                    conversation_file=conversation_file.name
+                )
+                failed_stats.error_details = ErrorDetails(
+                    model_name=selected_model,
+                    conversation_file=conversation_file.name,
+                    step=-1,  # -1 indicates error occurred before conversation started
+                    exception_type=type(e).__name__,
+                    error_message=error_message,
+                    server_error=server_error
+                )
+                failed_stats.error = f"{type(e).__name__}: {error_message}"
                 return failed_stats
 
         # Manage concurrent task pool
@@ -658,14 +837,48 @@ def print_session_report(stats: UserSessionStats) -> None:
     if stats.failed_conversations > 0:
         print("ERRORS")
         print("-" * 60)
+
+        # Group errors by type and count them
         error_counts = {}
+        detailed_errors = []
+
         for s in stats.conversation_stats:
             if s.error:
-                # Get first 80 chars of error
-                error_key = s.error[:80]
-                error_counts[error_key] = error_counts.get(error_key, 0) + 1
+                if s.error_details:
+                    # Collect detailed error information
+                    detailed_errors.append(s.error_details)
+                    # Group by exception type
+                    error_key = s.error_details.exception_type
+                    error_counts[error_key] = error_counts.get(error_key, 0) + 1
+                else:
+                    # Fallback to old error string
+                    error_key = s.error[:80]
+                    error_counts[error_key] = error_counts.get(error_key, 0) + 1
 
-        for error, count in sorted(error_counts.items(), key=lambda x: x[1], reverse=True):
-            print(f"  [{count}x] {error}...")
+        # Print error summary by type
+        print("\nError Summary:")
+        for error_type, count in sorted(error_counts.items(), key=lambda x: x[1], reverse=True):
+            print(f"  [{count}x] {error_type}")
 
-    print("=" * 60)
+        # Print detailed error information
+        print("\nDetailed Error Information:")
+        print("-" * 60)
+        for idx, error in enumerate(detailed_errors[:10], 1):  # Show first 10 detailed errors
+            print(f"\n[Error {idx}]")
+            print(f"  Model: {error.model_name}")
+            print(f"  Conversation File: {error.conversation_file}")
+            print(f"  Failed at Step: {error.step}" +
+                  (" (initialization)" if error.step == 0 else
+                   " (before start)" if error.step == -1 else ""))
+            print(f"  Exception Type: {error.exception_type}")
+            print(f"  Error Message: {error.error_message}")
+            if error.server_error:
+                # Truncate server error if too long
+                server_err_display = error.server_error
+                print(f"  Server Error: {server_err_display}")
+            print(f"  Timestamp: {error.timestamp}")
+
+        if len(detailed_errors) > 10:
+            print(f"\n... and {len(detailed_errors) - 10} more errors")
+
+    print("\n" + "=" * 60)

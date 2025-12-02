@@ -30,7 +30,8 @@ async def run_multi_session(
     api_key: str = None,
     api_base: str = None,
     temperature_range: tuple[float, float] = (0.5, 1.0),
-    worker_id: int = None
+    worker_id: int = None,
+    model_filter_file: str = "model_filter.txt"
 ) -> list[UserSessionStats]:
     """
     Run multiple user sessions concurrently.
@@ -44,6 +45,7 @@ async def run_multi_session(
         api_base: API base URL
         temperature_range: Temperature range for random selection
         worker_id: Optional worker ID for logging (used in multiprocessing mode)
+        model_filter_file: Path to file containing model names to exclude
 
     Returns:
         List of UserSessionStats from each session
@@ -74,7 +76,8 @@ async def run_multi_session(
                 api_key=api_key,
                 api_base=api_base,
                 temperature_range=temperature_range,
-                worker_id=worker_id
+                worker_id=worker_id,
+                model_filter_file=model_filter_file
             )
         )
         tasks.append(task)
@@ -120,7 +123,8 @@ async def run_single_session(
     api_key: str = None,
     api_base: str = None,
     temperature_range: tuple[float, float] = (0.5, 1.0),
-    worker_id: int = None
+    worker_id: int = None,
+    model_filter_file: str = "model_filter.txt"
 ) -> UserSessionStats:
     """
     Run a single user session with session ID prefix for logging.
@@ -134,6 +138,7 @@ async def run_single_session(
         api_base: API base URL
         temperature_range: Temperature range for random selection
         worker_id: Optional worker ID for logging (used in multiprocessing mode)
+        model_filter_file: Path to file containing model names to exclude
 
     Returns:
         UserSessionStats from the session
@@ -153,7 +158,8 @@ async def run_single_session(
             model_name=model_name,
             api_key=api_key,
             api_base=api_base,
-            temperature_range=temperature_range
+            temperature_range=temperature_range,
+            model_filter_file=model_filter_file
         )
 
         print(f"\n{prefix} ✓ Completed successfully")
@@ -205,6 +211,13 @@ def aggregate_session_stats(all_sessions: list[UserSessionStats]) -> dict:
     for session in all_sessions:
         all_models.update(session.models_used)
 
+    # Collect all error details across all sessions
+    all_error_details = []
+    for session in all_sessions:
+        for conv_stat in session.conversation_stats:
+            if conv_stat.error and conv_stat.error_details:
+                all_error_details.append(conv_stat.error_details)
+
     # Calculate total duration (max of all sessions)
     total_duration = max(s.duration_seconds for s in all_sessions)
 
@@ -223,7 +236,8 @@ def aggregate_session_stats(all_sessions: list[UserSessionStats]) -> dict:
         'models_used': sorted(list(all_models)),
         'total_duration': total_duration,
         'conversations_per_minute': (total_conversations / total_duration) * 60 if total_duration > 0 else 0,
-        'tokens_per_second': total_tokens / total_duration if total_duration > 0 else 0
+        'tokens_per_second': total_tokens / total_duration if total_duration > 0 else 0,
+        'error_details': all_error_details
     }
 
 
@@ -271,6 +285,45 @@ def print_aggregate_report(stats: dict):
     print("-" * 70)
     for model in stats['models_used']:
         print(f"  - {model}")
+    print()
+
+    # Display detailed error information if there are any failures
+    if stats['failed_conversations'] > 0 and stats.get('error_details'):
+        print("ERRORS")
+        print("-" * 70)
+
+        # Group errors by type and count them
+        error_counts = {}
+        for error_detail in stats['error_details']:
+            error_type = error_detail.exception_type
+            error_counts[error_type] = error_counts.get(error_type, 0) + 1
+
+        # Print error summary by type
+        print("\nError Summary:")
+        for error_type, count in sorted(error_counts.items(), key=lambda x: x[1], reverse=True):
+            print(f"  [{count}x] {error_type}")
+
+        # Print detailed error information (up to 10 errors)
+        print("\nDetailed Error Information:")
+        print("-" * 70)
+        for idx, error in enumerate(stats['error_details'][:10], 1):
+            print(f"\n[Error {idx}]")
+            print(f"  Model: {error.model_name}")
+            print(f"  Conversation File: {error.conversation_file}")
+            print(f"  Failed at Step: {error.step}" +
+                  (" (initialization)" if error.step == 0 else
+                   " (before start)" if error.step == -1 else ""))
+            print(f"  Exception Type: {error.exception_type}")
+            print(f"  Error Message: {error.error_message}")
+            if error.server_error:
+                # Truncate server error if too long
+                server_err_display = error.server_error[:200] + "..." if len(error.server_error) > 200 else error.server_error
+                print(f"  Server Error: {server_err_display}")
+            print(f"  Timestamp: {error.timestamp}")
+
+        if len(stats['error_details']) > 10:
+            print(f"\n... and {len(stats['error_details']) - 10} more errors")
+        print()
 
     print("=" * 70)
 
@@ -283,7 +336,8 @@ def run_worker_process(
     model_name: str,
     api_key: str,
     api_base: str,
-    temperature_range: tuple[float, float]
+    temperature_range: tuple[float, float],
+    model_filter_file: str
 ) -> list[UserSessionStats]:
     """
     Worker process function that runs multiple sessions.
@@ -300,6 +354,7 @@ def run_worker_process(
         api_key: API key
         api_base: API base URL
         temperature_range: Temperature range for random selection
+        model_filter_file: Path to file containing model names to exclude
 
     Returns:
         List of UserSessionStats from all sessions in this worker
@@ -323,7 +378,8 @@ def run_worker_process(
                 api_key=api_key,
                 api_base=api_base,
                 temperature_range=temperature_range,
-                worker_id=worker_id
+                worker_id=worker_id,
+                model_filter_file=model_filter_file
             )
         )
         print(f"\n{'=' * 70}")
@@ -347,7 +403,8 @@ def run_with_multiprocessing(
     model_name: str,
     api_key: str,
     api_base: str,
-    temperature_range: tuple[float, float]
+    temperature_range: tuple[float, float],
+    model_filter_file: str = "model_filter.txt"
 ) -> list[UserSessionStats]:
     """
     Run multiple worker processes, each running multiple sessions.
@@ -361,6 +418,7 @@ def run_with_multiprocessing(
         api_key: API key
         api_base: API base URL
         temperature_range: Temperature range for random selection
+        model_filter_file: Path to file containing model names to exclude
 
     Returns:
         Combined list of UserSessionStats from all workers
@@ -394,7 +452,8 @@ def run_with_multiprocessing(
                 model_name,
                 api_key,
                 api_base,
-                temperature_range
+                temperature_range,
+                model_filter_file
             )
             for worker_id in range(1, num_workers + 1)
         ]
@@ -494,6 +553,12 @@ Examples:
         action='store_true',
         help='Show detailed report for each individual session'
     )
+    parser.add_argument(
+        '--model-filter',
+        type=str,
+        default='model_filter.txt',
+        help='Path to file containing model names to exclude (default: model_filter.txt)'
+    )
 
     args = parser.parse_args()
 
@@ -534,7 +599,8 @@ Examples:
             model_name=model_name,
             api_key=api_key,
             api_base=api_base,
-            temperature_range=(args.temp_min, args.temp_max)
+            temperature_range=(args.temp_min, args.temp_max),
+            model_filter_file=args.model_filter
         )
     else:
         # Use asyncio only (single process)
@@ -545,7 +611,8 @@ Examples:
             model_name=model_name,
             api_key=api_key,
             api_base=api_base,
-            temperature_range=(args.temp_min, args.temp_max)
+            temperature_range=(args.temp_min, args.temp_max),
+            model_filter_file=args.model_filter
         )
 
     # Print individual session reports if requested
