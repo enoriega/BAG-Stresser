@@ -548,8 +548,9 @@ async def simulate_user_session(
     """
     Simulate a user running stress tests repeatedly for a specified duration.
 
-    Randomly selects conversations and parameters for each test iteration.
-    Continues running until the duration expires.
+    The session behaves like a loop that runs for at least duration_seconds, measuring
+    only active execution time (not async sleep time). Conversations started before
+    the duration expires are allowed to complete.
 
     Args:
         conversations_dir: Directory containing conversation JSON files
@@ -590,7 +591,8 @@ async def simulate_user_session(
 
     # Initialize session tracking
     session_start = datetime.now()
-    end_time = time.time() + duration_seconds
+    active_time_start = time.time()
+    active_time_elapsed = 0.0
 
     all_stats: List[ConversationStats] = []
     models_used = set()
@@ -604,201 +606,138 @@ async def simulate_user_session(
     print(f"Concurrency level: {concurrency} concurrent conversation(s)")
     print("-" * 60)
 
-    if concurrency == 1:
-        # Sequential execution (original behavior)
-        iteration = 0
-        while time.time() < end_time:
-            iteration += 1
+    async def run_single_conversation(conv_id: int):
+        """
+        Run a single conversation as part of the session.
 
-            # Randomly select conversation
-            conversation_file = random.choice(conversation_files)
+        This function always returns a ConversationStats object (even on failure)
+        and never raises exceptions, ensuring the session loop continues.
+        """
+        conversation_file = random.choice(conversation_files)
+        selected_model = model_name if model_name else random.choice(available_models)
+        temperature = random.uniform(*temperature_range)
+        max_messages = None if random.random() >= 0.2 else random.randint(1, 3)
 
-            # Randomly select model if not specified
-            selected_model = model_name if model_name else random.choice(available_models)
-            models_used.add(selected_model)
+        models_used.add(selected_model)
 
-            # Randomly select temperature within range
-            temperature = random.uniform(*temperature_range)
+        print(f"[{conv_id}] Running: {conversation_file.name} | Model: {selected_model} | Temp: {temperature:.2f}", end=" ")
 
-            # Randomly decide whether to limit messages (20% chance of limiting)
-            max_messages = None
-            if random.random() < 0.2:
-                max_messages = random.randint(1, 3)
+        try:
+            stats = await run_conversation_stress_test(
+                conversation_file_path=str(conversation_file),
+                model_name=selected_model,
+                temperature=temperature,
+                max_tokens=None,
+                max_messages=max_messages,
+                api_key=api_key,
+                api_base=api_base
+            )
 
-            print(f"[{iteration}] Running: {conversation_file.name} | Model: {selected_model} | Temp: {temperature:.2f}", end=" ")
+            if stats.error:
+                print(f"✗ Error: {stats.error[:50]}... (continuing session)")
+            else:
+                print(f"✓ {stats.total_messages_sent} msgs, {stats.average_latency_seconds:.2f}s avg")
 
-            try:
-                # Run the stress test
-                stats = await run_conversation_stress_test(
-                    conversation_file_path=str(conversation_file),
-                    model_name=selected_model,
-                    temperature=temperature,
-                    max_tokens=None,  # Always unlimited
-                    max_messages=max_messages,
-                    api_key=api_key,
-                    api_base=api_base
-                )
+            return stats
 
-                all_stats.append(stats)
+        except Exception as e:
+            # Catch ANY exception to prevent session from stopping
+            print(f"✗ Exception: {type(e).__name__}: {str(e)[:50]}... (continuing session)")
 
-                if stats.error:
-                    print(f"✗ Error: {stats.error[:50]}...")
-                else:
-                    print(f"✓ {stats.total_messages_sent} msgs, {stats.average_latency_seconds:.2f}s avg")
+            # Create a failed stats entry with detailed error information
+            server_error = None
+            error_message = str(e)
 
-            except Exception as e:
-                print(f"✗ Exception: {type(e).__name__}: {str(e)[:50]}...")
-                # Create a failed stats entry with detailed error information
-                server_error = None
-                error_message = str(e)
+            if hasattr(e, 'response'):
+                try:
+                    if hasattr(e.response, 'json'):
+                        error_data = e.response.json()
+                        server_error = json.dumps(error_data)
+                    elif hasattr(e.response, 'text'):
+                        server_error = e.response.text
+                except:
+                    pass
 
-                if hasattr(e, 'response'):
-                    try:
-                        if hasattr(e.response, 'json'):
-                            error_data = e.response.json()
-                            server_error = json.dumps(error_data)
-                        elif hasattr(e.response, 'text'):
-                            server_error = e.response.text
-                    except:
-                        pass
+            # Extract traceback information
+            script_name, line_number, tb_str = extract_traceback_info(e)
 
-                # Extract traceback information
-                script_name, line_number, tb_str = extract_traceback_info(e)
+            failed_stats = ConversationStats(
+                conversation_id=conversation_file.stem,
+                model_name=selected_model,
+                conversation_file=conversation_file.name
+            )
+            failed_stats.error_details = ErrorDetails(
+                model_name=selected_model,
+                conversation_file=conversation_file.name,
+                step=-1,  # -1 indicates error occurred before conversation started
+                exception_type=type(e).__name__,
+                error_message=error_message,
+                server_error=server_error,
+                script_name=script_name,
+                line_number=line_number,
+                traceback=tb_str
+            )
+            failed_stats.error = f"{type(e).__name__}: {error_message}"
+            return failed_stats
 
-                failed_stats = ConversationStats(
-                    conversation_id=conversation_file.stem,
-                    model_name=selected_model,
-                    conversation_file=conversation_file.name
-                )
-                failed_stats.error_details = ErrorDetails(
-                    model_name=selected_model,
-                    conversation_file=conversation_file.name,
-                    step=-1,  # -1 indicates error occurred before conversation started
-                    exception_type=type(e).__name__,
-                    error_message=error_message,
-                    server_error=server_error,
-                    script_name=script_name,
-                    line_number=line_number,
-                    traceback=tb_str
-                )
-                failed_stats.error = f"{type(e).__name__}: {error_message}"
-                all_stats.append(failed_stats)
+    # Manage concurrent task pool with time-based loop
+    pending_tasks = set()
+    conversation_counter = 0
 
-    else:
-        # Concurrent execution
-        async def run_single_conversation(conv_id: int):
-            """Run a single conversation as part of concurrent pool."""
-            conversation_file = random.choice(conversation_files)
-            selected_model = model_name if model_name else random.choice(available_models)
-            temperature = random.uniform(*temperature_range)
-            max_messages = None if random.random() >= 0.2 else random.randint(1, 3)
-
-            models_used.add(selected_model)
-
-            print(f"[{conv_id}] Running: {conversation_file.name} | Model: {selected_model} | Temp: {temperature:.2f}", end=" ")
-
-            try:
-                stats = await run_conversation_stress_test(
-                    conversation_file_path=str(conversation_file),
-                    model_name=selected_model,
-                    temperature=temperature,
-                    max_tokens=None,
-                    max_messages=max_messages,
-                    api_key=api_key,
-                    api_base=api_base
-                )
-
-                if stats.error:
-                    print(f"✗ Error: {stats.error[:50]}...")
-                else:
-                    print(f"✓ {stats.total_messages_sent} msgs, {stats.average_latency_seconds:.2f}s avg")
-
-                return stats
-
-            except Exception as e:
-                print(f"✗ Exception: {type(e).__name__}: {str(e)[:50]}...")
-                # Create a failed stats entry with detailed error information
-                server_error = None
-                error_message = str(e)
-
-                if hasattr(e, 'response'):
-                    try:
-                        if hasattr(e.response, 'json'):
-                            error_data = e.response.json()
-                            server_error = json.dumps(error_data)
-                        elif hasattr(e.response, 'text'):
-                            server_error = e.response.text
-                    except:
-                        pass
-
-                # Extract traceback information
-                script_name, line_number, tb_str = extract_traceback_info(e)
-
-                failed_stats = ConversationStats(
-                    conversation_id=conversation_file.stem,
-                    model_name=selected_model,
-                    conversation_file=conversation_file.name
-                )
-                failed_stats.error_details = ErrorDetails(
-                    model_name=selected_model,
-                    conversation_file=conversation_file.name,
-                    step=-1,  # -1 indicates error occurred before conversation started
-                    exception_type=type(e).__name__,
-                    error_message=error_message,
-                    server_error=server_error,
-                    script_name=script_name,
-                    line_number=line_number,
-                    traceback=tb_str
-                )
-                failed_stats.error = f"{type(e).__name__}: {error_message}"
-                return failed_stats
-
-        # Manage concurrent task pool
-        pending_tasks = set()
-        conversation_counter = 0
-
-        # Initial burst to fill concurrency slots
-        for _ in range(concurrency):
-            if time.time() >= end_time:
-                break
+    # Main loop: continue spawning conversations until active time reaches duration
+    while active_time_elapsed < duration_seconds:
+        # Spawn tasks up to concurrency limit
+        while len(pending_tasks) < concurrency and active_time_elapsed < duration_seconds:
             conversation_counter += 1
             task = asyncio.create_task(run_single_conversation(conversation_counter))
             pending_tasks.add(task)
 
-        # Main loop: as tasks complete, spawn new ones
-        while pending_tasks and time.time() < end_time:
-            # Wait for at least one task to complete
+            # Update active time (exclude sleep time)
+            current_time = time.time()
+            active_time_elapsed = current_time - active_time_start
+
+        # Wait for at least one task to complete if we have any
+        if pending_tasks:
             done, pending_tasks = await asyncio.wait(
                 pending_tasks,
                 return_when=asyncio.FIRST_COMPLETED,
-                timeout=max(0.1, end_time - time.time())
+                timeout=0.1
             )
 
             # Collect results from completed tasks
+            # Since run_single_conversation never raises, these should all succeed
             for task in done:
                 try:
                     stats = await task
                     all_stats.append(stats)
                 except Exception as e:
-                    print(f"✗ Task exception: {str(e)[:50]}...")
+                    # This should rarely happen since run_single_conversation catches all exceptions
+                    print(f"✗ Unexpected task exception: {str(e)[:50]}... (continuing session)")
 
-            # Spawn new tasks to maintain concurrency level
-            while len(pending_tasks) < concurrency and time.time() < end_time:
-                conversation_counter += 1
-                task = asyncio.create_task(run_single_conversation(conversation_counter))
-                pending_tasks.add(task)
+            # Update active time after processing
+            current_time = time.time()
+            active_time_elapsed = current_time - active_time_start
 
-        # Wait for any remaining tasks to complete
-        if pending_tasks:
-            done, _ = await asyncio.wait(pending_tasks, timeout=10.0)
-            for task in done:
-                try:
-                    stats = await task
-                    all_stats.append(stats)
-                except Exception as e:
-                    print(f"✗ Task exception: {str(e)[:50]}...")
+    # Wait for any remaining tasks to complete (conversations started before duration expired)
+    if pending_tasks:
+        print(f"\nDuration reached. Waiting for {len(pending_tasks)} remaining conversations to complete...")
+
+        # Wait indefinitely for all remaining tasks to finish
+        done, _ = await asyncio.wait(pending_tasks)
+
+        # Collect results from completed tasks
+        for task in done:
+            try:
+                stats = await task
+                all_stats.append(stats)
+            except Exception as e:
+                # This should rarely happen since run_single_conversation catches all exceptions
+                print(f"✗ Unexpected task exception: {str(e)[:50]}... (session continuing)")
+
+        print(f"All {len(done)} remaining conversations completed.")
 
     session_end = datetime.now()
+    actual_duration = (session_end - session_start).total_seconds()
 
     # Aggregate statistics
     successful = [s for s in all_stats if not s.error]
@@ -818,13 +757,12 @@ async def simulate_user_session(
     min_latency = min(all_latencies) if all_latencies else 0.0
     max_latency = max(all_latencies) if all_latencies else 0.0
 
-    duration = duration_seconds
-    conversations_per_minute = (len(all_stats) / duration) * 60
+    conversations_per_minute = (len(all_stats) / actual_duration) * 60 if actual_duration > 0 else 0
 
     return UserSessionStats(
         session_start=session_start,
         session_end=session_end,
-        duration_seconds=duration,
+        duration_seconds=actual_duration,
         total_conversations=len(all_stats),
         successful_conversations=len(successful),
         failed_conversations=len(failed),
@@ -979,6 +917,22 @@ def print_session_report(stats: UserSessionStats) -> None:
     print("MESSAGE & TOKEN STATISTICS")
     print("-" * 60)
     print(f"Total Messages Sent: {stats.total_messages_sent}")
+
+    # Calculate message-level error rate for this session
+    total_user_messages_attempted = 0
+    total_ai_responses_received = 0
+    for conv_stat in stats.conversation_stats:
+        total_user_messages_attempted += conv_stat.total_user_messages
+        total_ai_responses_received += conv_stat.total_ai_responses
+
+    failed_messages = total_user_messages_attempted - total_ai_responses_received
+    message_error_rate = (failed_messages / total_user_messages_attempted * 100) if total_user_messages_attempted > 0 else 0.0
+
+    print(f"  User Messages Attempted: {total_user_messages_attempted:,}")
+    print(f"  AI Responses Received: {total_ai_responses_received:,}")
+    print(f"  Failed Messages: {failed_messages:,}")
+    print(f"  Message Error Rate: {message_error_rate:.2f}%")
+    print()
     print(f"Total Tokens: {stats.total_tokens:,}")
     print(f"  Input Tokens: {stats.total_tokens_input:,}")
     print(f"  Output Tokens: {stats.total_tokens_output:,}")
