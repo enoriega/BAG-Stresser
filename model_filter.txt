@@ -24,3 +24,6 @@
 arena-model
 openai.gpt-oss-20b-1:0
 openai.gpt-oss-120b-1:0
+openai.gpt-oss-safeguard-20b
+global.twelvelabs.pegasus-1-2-v1:0
+openai.gpt-oss-safeguard-120b

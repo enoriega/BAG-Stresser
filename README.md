@@ -55,6 +55,44 @@ TEMPERATURE=0.7
 MAX_TOKENS=500
 ```
 
+3. (Optional) Create a `model_filter.txt` file to exclude specific models:
+```bash
+# Example: Exclude expensive or non-chat models
+cat > model_filter.txt << EOF
+# Embedding models
+text-embedding-ada-002
+text-embedding-3-small
+
+# Expensive models
+gpt-4-32k
+EOF
+```
+
+## Docker Usage
+
+BAG-Stresser can be run in a Docker container. See [DOCKER.md](DOCKER.md) for complete documentation.
+
+**Quick Start:**
+
+```bash
+# Build the image
+docker build -t bag-stresser .
+
+# Run basic stress test
+docker run --env-file .env bag-stresser --duration 60
+
+# Run multi-processing stress test
+docker run --env-file .env bag-stresser \
+  --workers 4 --sessions 3 --duration 120
+
+# Use custom model filter
+docker run --env-file .env \
+  -v $(pwd)/my-filter.txt:/app/model_filter.txt \
+  bag-stresser --duration 120
+```
+
+The Docker image automatically includes your `model_filter.txt` file if present during build.
+
 ## Usage
 
 ### Basic Example

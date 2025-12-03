@@ -10,8 +10,11 @@ COPY pyproject.toml ./
 # Install dependencies using uv
 RUN uv sync --no-dev
 
-# Copy the rest of the application (including conversations directory)
+# Copy the rest of the application (including conversations directory and model_filter.txt if present)
 COPY . .
+
+# Create a default empty model_filter.txt if it doesn't exist
+RUN touch /app/model_filter.txt
 
 # Make the entrypoint script executable
 RUN chmod +x /app/entrypoint.sh

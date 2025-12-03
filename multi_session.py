@@ -16,6 +16,7 @@ import argparse
 import multiprocessing
 from datetime import datetime
 from dotenv import load_dotenv
+from pathlib import Path
 from stresser import simulate_user_session, print_session_report, UserSessionStats
 
 # Load environment variables
@@ -31,7 +32,7 @@ async def run_multi_session(
     api_base: str = None,
     temperature_range: tuple[float, float] = (0.5, 1.0),
     worker_id: int = None,
-    model_filter_file: str = "model_filter.txt"
+    model_filter_file: str = Path(__file__) / "model_filter.txt"
 ) -> list[UserSessionStats]:
     """
     Run multiple user sessions concurrently.
@@ -124,7 +125,7 @@ async def run_single_session(
     api_base: str = None,
     temperature_range: tuple[float, float] = (0.5, 1.0),
     worker_id: int = None,
-    model_filter_file: str = "model_filter.txt"
+    model_filter_file: str = Path(__file__) / "model_filter.txt"
 ) -> UserSessionStats:
     """
     Run a single user session with session ID prefix for logging.
@@ -241,6 +242,121 @@ def aggregate_session_stats(all_sessions: list[UserSessionStats]) -> dict:
     }
 
 
+def print_error_timeline_aggregate(stats: dict, interval_seconds: int = 5) -> None:
+    """
+    Print a timeline visualization of when errors occurred across all sessions.
+
+    Args:
+        stats: Aggregated statistics dictionary containing error details
+        interval_seconds: Size of time intervals in seconds (default: 5)
+    """
+    if stats['failed_conversations'] == 0 or not stats.get('error_details'):
+        return
+
+    # Collect all errors with timestamps
+    errors_with_time = []
+    for error in stats['error_details']:
+        try:
+            error_time = datetime.fromisoformat(error.timestamp)
+            errors_with_time.append({
+                'time': error_time,
+                'type': error.exception_type,
+                'details': error
+            })
+        except:
+            pass
+
+    if not errors_with_time:
+        return
+
+    # Sort errors by time
+    errors_with_time.sort(key=lambda x: x['time'])
+
+    # Calculate overall start and end times
+    session_start = min(error['time'] for error in errors_with_time)
+    session_end = max(error['time'] for error in errors_with_time)
+    total_duration = (session_end - session_start).total_seconds()
+
+    # If duration is too short, extend it a bit for better visualization
+    if total_duration < interval_seconds:
+        total_duration = interval_seconds
+
+    # Create time buckets
+    num_intervals = int(total_duration / interval_seconds) + 1
+    buckets = [[] for _ in range(num_intervals)]
+
+    # Assign errors to buckets
+    for error in errors_with_time:
+        elapsed = (error['time'] - session_start).total_seconds()
+        bucket_idx = int(elapsed / interval_seconds)
+        if 0 <= bucket_idx < num_intervals:
+            buckets[bucket_idx].append(error)
+
+    # Find max errors in any bucket for scaling
+    max_errors = max(len(bucket) for bucket in buckets) if buckets else 1
+    bar_width = 20  # Width of the bar chart
+
+    print("\nERROR TIMELINE")
+    print("-" * 70)
+    print(f"Session Duration: {total_duration:.1f} seconds ({session_start.strftime('%Y-%m-%d %H:%M:%S')} to {session_end.strftime('%Y-%m-%d %H:%M:%S')})")
+    print(f"\nErrors over time ({interval_seconds}-second intervals):")
+
+    # Print timeline
+    for i, bucket in enumerate(buckets):
+        start_sec = i * interval_seconds
+        end_sec = min((i + 1) * interval_seconds, total_duration)
+        num_errors = len(bucket)
+
+        # Format time range
+        time_range = f"{int(start_sec//60):02d}:{int(start_sec%60):02d}-{int(end_sec//60):02d}:{int(end_sec%60):02d}"
+
+        # Create bar
+        if num_errors > 0:
+            bar_len = int((num_errors / max_errors) * bar_width)
+            bar = "█" * bar_len
+        else:
+            bar = " " * 10
+
+        # Count error types in this bucket
+        error_type_counts = {}
+        for error in bucket:
+            error_type = error['type']
+            error_type_counts[error_type] = error_type_counts.get(error_type, 0) + 1
+
+        # Format error type summary
+        if error_type_counts:
+            type_summary = ", ".join(f"{k}: {v}" for k, v in sorted(error_type_counts.items(), key=lambda x: x[1], reverse=True))
+            error_label = "error" if num_errors == 1 else "errors"
+            print(f"{time_range} [{bar:<{bar_width}}] {num_errors} {error_label:<7} ({type_summary})")
+        else:
+            print(f"{time_range} [{bar:<{bar_width}}] 0 errors")
+
+    # Calculate statistics
+    error_windows = sum(1 for bucket in buckets if len(bucket) > 0)
+    error_free_windows = num_intervals - error_windows
+    avg_errors_per_interval = len(errors_with_time) / num_intervals if num_intervals > 0 else 0
+    peak_errors = max_errors
+    peak_interval_idx = next(i for i, bucket in enumerate(buckets) if len(bucket) == peak_errors)
+    peak_start = peak_interval_idx * interval_seconds
+    peak_end = min((peak_interval_idx + 1) * interval_seconds, total_duration)
+
+    print("\nError Rate Statistics:")
+    print(f"  Peak Error Rate: {peak_errors} errors in {interval_seconds}-second window ({int(peak_start//60):02d}:{int(peak_start%60):02d}-{int(peak_end//60):02d}:{int(peak_end%60):02d})")
+    print(f"  Average Errors per {interval_seconds}s: {avg_errors_per_interval:.1f} errors")
+    print(f"  Total Error Windows: {error_windows} out of {num_intervals} intervals")
+    print(f"  Error-Free Windows: {error_free_windows} out of {num_intervals} intervals")
+
+    # Overall error type counts
+    all_error_types = {}
+    for error in errors_with_time:
+        error_type = error['type']
+        all_error_types[error_type] = all_error_types.get(error_type, 0) + 1
+
+    print("\nMost Common Errors:")
+    for error_type, count in sorted(all_error_types.items(), key=lambda x: x[1], reverse=True):
+        print(f"  [{count}x] {error_type}")
+
+
 def print_aggregate_report(stats: dict):
     """
     Print aggregated statistics from multiple sessions.
@@ -289,7 +405,10 @@ def print_aggregate_report(stats: dict):
 
     # Display detailed error information if there are any failures
     if stats['failed_conversations'] > 0 and stats.get('error_details'):
-        print("ERRORS")
+        # Print error timeline first
+        print_error_timeline_aggregate(stats)
+
+        print("\nERRORS")
         print("-" * 70)
 
         # Group errors by type and count them
@@ -303,10 +422,10 @@ def print_aggregate_report(stats: dict):
         for error_type, count in sorted(error_counts.items(), key=lambda x: x[1], reverse=True):
             print(f"  [{count}x] {error_type}")
 
-        # Print detailed error information (up to 10 errors)
+        # Print detailed error information (all errors)
         print("\nDetailed Error Information:")
         print("-" * 70)
-        for idx, error in enumerate(stats['error_details'][:10], 1):
+        for idx, error in enumerate(stats['error_details'], 1):
             print(f"\n[Error {idx}]")
             print(f"  Model: {error.model_name}")
             print(f"  Conversation File: {error.conversation_file}")
@@ -315,14 +434,15 @@ def print_aggregate_report(stats: dict):
                    " (before start)" if error.step == -1 else ""))
             print(f"  Exception Type: {error.exception_type}")
             print(f"  Error Message: {error.error_message}")
+            if hasattr(error, 'script_name') and error.script_name:
+                print(f"  Script: {error.script_name}:{error.line_number}")
             if error.server_error:
                 # Truncate server error if too long
                 server_err_display = error.server_error[:200] + "..." if len(error.server_error) > 200 else error.server_error
                 print(f"  Server Error: {server_err_display}")
             print(f"  Timestamp: {error.timestamp}")
-
-        if len(stats['error_details']) > 10:
-            print(f"\n... and {len(stats['error_details']) - 10} more errors")
+            if hasattr(error, 'traceback') and error.traceback:
+                print(f"  Traceback:\n{error.traceback}")
         print()
 
     print("=" * 70)
@@ -404,7 +524,7 @@ def run_with_multiprocessing(
     api_key: str,
     api_base: str,
     temperature_range: tuple[float, float],
-    model_filter_file: str = "model_filter.txt"
+    model_filter_file: str = Path(__file__) / "model_filter.txt"
 ) -> list[UserSessionStats]:
     """
     Run multiple worker processes, each running multiple sessions.

@@ -3,6 +3,7 @@ import time
 import asyncio
 import random
 import re
+import traceback
 from pathlib import Path
 from typing import Optional, List, Dict
 from dataclasses import dataclass, field
@@ -26,6 +27,31 @@ def clear_llm_cache():
     _llm_client_cache.clear()
 
 
+def extract_traceback_info(exc: Exception) -> tuple[Optional[str], Optional[int], str]:
+    """
+    Extract script name, line number, and full traceback from an exception.
+
+    Args:
+        exc: The exception to extract information from
+
+    Returns:
+        Tuple of (script_name, line_number, full_traceback)
+    """
+    tb_str = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+    # Extract the last traceback entry (where the error actually occurred)
+    tb_lines = traceback.extract_tb(exc.__traceback__)
+    if tb_lines:
+        last_frame = tb_lines[-1]
+        script_name = last_frame.filename
+        line_number = last_frame.lineno
+    else:
+        script_name = None
+        line_number = None
+
+    return script_name, line_number, tb_str
+
+
 @dataclass
 class ErrorDetails:
     """Detailed information about an error that occurred during a conversation."""
@@ -36,6 +62,9 @@ class ErrorDetails:
     error_message: str
     server_error: Optional[str] = None  # Server-specific error if available
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    script_name: Optional[str] = None  # Script file where error occurred
+    line_number: Optional[int] = None  # Line number where error occurred
+    traceback: Optional[str] = None  # Full traceback for debugging
 
 
 @dataclass
@@ -316,6 +345,9 @@ async def run_conversation_stress_test(
                     except:
                         pass
 
+                # Extract traceback information
+                script_name, line_number, tb_str = extract_traceback_info(e)
+
                 # Create detailed error information
                 stats.error_details = ErrorDetails(
                     model_name=model_name,
@@ -323,7 +355,10 @@ async def run_conversation_stress_test(
                     step=idx + 1,
                     exception_type=type(e).__name__,
                     error_message=error_message,
-                    server_error=server_error
+                    server_error=server_error,
+                    script_name=script_name,
+                    line_number=line_number,
+                    traceback=tb_str
                 )
                 stats.error = f"Error at step {idx + 1}: {type(e).__name__}: {error_message}"
                 break
@@ -351,20 +386,26 @@ async def run_conversation_stress_test(
             except:
                 pass
 
+        # Extract traceback information
+        script_name, line_number, tb_str = extract_traceback_info(e)
+
         stats.error_details = ErrorDetails(
             model_name=model_name,
             conversation_file=conversation_path.name,
             step=0,  # 0 indicates initialization failure
             exception_type=type(e).__name__,
             error_message=error_message,
-            server_error=server_error
+            server_error=server_error,
+            script_name=script_name,
+            line_number=line_number,
+            traceback=tb_str
         )
         stats.error = f"Error initializing LLM: {type(e).__name__}: {error_message}"
 
     return stats
 
 
-def load_model_filter(filter_file: str = "model_filter.txt") -> set[str]:
+def load_model_filter(filter_file: str = Path(__file__) / "model_filter.txt") -> set[str]:
     """
     Load model names to filter out from a file.
 
@@ -394,7 +435,7 @@ def load_model_filter(filter_file: str = "model_filter.txt") -> set[str]:
     return filtered_models
 
 
-def filter_models(models: List[str], filter_file: str = "model_filter.txt") -> List[str]:
+def filter_models(models: List[str], filter_file: str = Path(__file__) / "model_filter.txt") -> List[str]:
     """
     Filter out models based on the filter file.
 
@@ -439,7 +480,7 @@ class UserSessionStats:
     conversation_stats: List[ConversationStats] = field(default_factory=list)
 
 
-async def get_available_models_async(api_key: str, api_base: str, filter_file: str = "model_filter.txt") -> List[str]:
+async def get_available_models_async(api_key: str, api_base: str, filter_file: str = Path(__file__) / "model_filter.txt") -> List[str]:
     """
     Fetch available models from the API endpoint asynchronously and apply filtering.
 
@@ -469,7 +510,7 @@ async def get_available_models_async(api_key: str, api_base: str, filter_file: s
     return await loop.run_in_executor(_io_executor, _fetch_models)
 
 
-def get_available_models(api_key: str, api_base: str, filter_file: str = "model_filter.txt") -> List[str]:
+def get_available_models(api_key: str, api_base: str, filter_file: str = Path(__file__) / "model_filter.txt") -> List[str]:
     """
     Fetch available models from the API endpoint (synchronous wrapper for compatibility) and apply filtering.
 
@@ -502,7 +543,7 @@ async def simulate_user_session(
     api_base: Optional[str] = None,
     temperature_range: tuple[float, float] = (0.5, 1.0),
     concurrency: int = 1,
-    model_filter_file: str = "model_filter.txt"
+    model_filter_file: str = Path(__file__) / "model_filter.txt"
 ) -> UserSessionStats:
     """
     Simulate a user running stress tests repeatedly for a specified duration.
@@ -621,6 +662,9 @@ async def simulate_user_session(
                     except:
                         pass
 
+                # Extract traceback information
+                script_name, line_number, tb_str = extract_traceback_info(e)
+
                 failed_stats = ConversationStats(
                     conversation_id=conversation_file.stem,
                     model_name=selected_model,
@@ -632,7 +676,10 @@ async def simulate_user_session(
                     step=-1,  # -1 indicates error occurred before conversation started
                     exception_type=type(e).__name__,
                     error_message=error_message,
-                    server_error=server_error
+                    server_error=server_error,
+                    script_name=script_name,
+                    line_number=line_number,
+                    traceback=tb_str
                 )
                 failed_stats.error = f"{type(e).__name__}: {error_message}"
                 all_stats.append(failed_stats)
@@ -684,6 +731,9 @@ async def simulate_user_session(
                     except:
                         pass
 
+                # Extract traceback information
+                script_name, line_number, tb_str = extract_traceback_info(e)
+
                 failed_stats = ConversationStats(
                     conversation_id=conversation_file.stem,
                     model_name=selected_model,
@@ -695,7 +745,10 @@ async def simulate_user_session(
                     step=-1,  # -1 indicates error occurred before conversation started
                     exception_type=type(e).__name__,
                     error_message=error_message,
-                    server_error=server_error
+                    server_error=server_error,
+                    script_name=script_name,
+                    line_number=line_number,
+                    traceback=tb_str
                 )
                 failed_stats.error = f"{type(e).__name__}: {error_message}"
                 return failed_stats
@@ -788,6 +841,118 @@ async def simulate_user_session(
     )
 
 
+def print_error_timeline(stats: UserSessionStats, interval_seconds: int = 5) -> None:
+    """
+    Print a timeline visualization of when errors occurred during the session.
+
+    Args:
+        stats: UserSessionStats object containing error details
+        interval_seconds: Size of time intervals in seconds (default: 5)
+    """
+    if stats.failed_conversations == 0:
+        return
+
+    # Collect all errors with timestamps
+    errors_with_time = []
+    for conv_stat in stats.conversation_stats:
+        if conv_stat.error_details:
+            try:
+                error_time = datetime.fromisoformat(conv_stat.error_details.timestamp)
+                errors_with_time.append({
+                    'time': error_time,
+                    'type': conv_stat.error_details.exception_type,
+                    'details': conv_stat.error_details
+                })
+            except:
+                pass
+
+    if not errors_with_time:
+        return
+
+    # Sort errors by time
+    errors_with_time.sort(key=lambda x: x['time'])
+
+    # Calculate session start and end times
+    session_start = stats.session_start
+    session_end = stats.session_end
+    total_duration = (session_end - session_start).total_seconds()
+
+    # Create time buckets
+    num_intervals = int(total_duration / interval_seconds) + 1
+    buckets = [[] for _ in range(num_intervals)]
+
+    # Assign errors to buckets
+    for error in errors_with_time:
+        elapsed = (error['time'] - session_start).total_seconds()
+        bucket_idx = int(elapsed / interval_seconds)
+        if 0 <= bucket_idx < num_intervals:
+            buckets[bucket_idx].append(error)
+
+    # Find max errors in any bucket for scaling
+    max_errors = max(len(bucket) for bucket in buckets) if buckets else 1
+    bar_width = 20  # Width of the bar chart
+
+    print("\nERROR TIMELINE")
+    print("-" * 60)
+    print(f"Session Duration: {total_duration:.1f} seconds ({session_start.strftime('%Y-%m-%d %H:%M:%S')} to {session_end.strftime('%Y-%m-%d %H:%M:%S')})")
+    print(f"\nErrors over time ({interval_seconds}-second intervals):")
+
+    # Print timeline
+    for i, bucket in enumerate(buckets):
+        start_sec = i * interval_seconds
+        end_sec = min((i + 1) * interval_seconds, total_duration)
+        num_errors = len(bucket)
+
+        # Format time range
+        time_range = f"{int(start_sec//60):02d}:{int(start_sec%60):02d}-{int(end_sec//60):02d}:{int(end_sec%60):02d}"
+
+        # Create bar
+        if num_errors > 0:
+            bar_len = int((num_errors / max_errors) * bar_width)
+            bar = "█" * bar_len
+        else:
+            bar = " " * 10
+
+        # Count error types in this bucket
+        error_type_counts = {}
+        for error in bucket:
+            error_type = error['type']
+            error_type_counts[error_type] = error_type_counts.get(error_type, 0) + 1
+
+        # Format error type summary
+        if error_type_counts:
+            type_summary = ", ".join(f"{k}: {v}" for k, v in sorted(error_type_counts.items(), key=lambda x: x[1], reverse=True))
+            error_label = "error" if num_errors == 1 else "errors"
+            print(f"{time_range} [{bar:<{bar_width}}] {num_errors} {error_label:<7} ({type_summary})")
+        else:
+            print(f"{time_range} [{bar:<{bar_width}}] 0 errors")
+
+    # Calculate statistics
+    error_windows = sum(1 for bucket in buckets if len(bucket) > 0)
+    error_free_windows = num_intervals - error_windows
+    avg_errors_per_interval = len(errors_with_time) / num_intervals if num_intervals > 0 else 0
+    peak_errors = max_errors
+    peak_interval_idx = next(i for i, bucket in enumerate(buckets) if len(bucket) == peak_errors)
+    peak_start = peak_interval_idx * interval_seconds
+    peak_end = min((peak_interval_idx + 1) * interval_seconds, total_duration)
+
+    print("\nError Rate Statistics:")
+    print(f"  Peak Error Rate: {peak_errors} errors in {interval_seconds}-second window ({int(peak_start//60):02d}:{int(peak_start%60):02d}-{int(peak_end//60):02d}:{int(peak_end%60):02d})")
+    print(f"  Average Errors per {interval_seconds}s: {avg_errors_per_interval:.1f} errors")
+    print(f"  Total Error Windows: {error_windows} out of {num_intervals} intervals")
+    print(f"  Error-Free Windows: {error_free_windows} out of {num_intervals} intervals")
+
+    # Overall error type counts
+    all_error_types = {}
+    for error in errors_with_time:
+        error_type = error['type']
+        all_error_types[error_type] = all_error_types.get(error_type, 0) + 1
+
+    print("\nMost Common Errors:")
+    for error_type, count in sorted(all_error_types.items(), key=lambda x: x[1], reverse=True):
+        print(f"  [{count}x] {error_type}")
+
+
 def print_session_report(stats: UserSessionStats) -> None:
     """
     Print a formatted report of the user session statistics.
@@ -835,7 +1000,10 @@ def print_session_report(stats: UserSessionStats) -> None:
     print()
 
     if stats.failed_conversations > 0:
-        print("ERRORS")
+        # Print error timeline first
+        print_error_timeline(stats)
+
+        print("\nERRORS")
         print("-" * 60)
 
         # Group errors by type and count them
@@ -863,7 +1031,7 @@ def print_session_report(stats: UserSessionStats) -> None:
         # Print detailed error information
         print("\nDetailed Error Information:")
         print("-" * 60)
-        for idx, error in enumerate(detailed_errors[:10], 1):  # Show first 10 detailed errors
+        for idx, error in enumerate(detailed_errors, 1):  # Show all detailed errors
             print(f"\n[Error {idx}]")
             print(f"  Model: {error.model_name}")
             print(f"  Conversation File: {error.conversation_file}")
@@ -872,13 +1040,14 @@ def print_session_report(stats: UserSessionStats) -> None:
                    " (before start)" if error.step == -1 else ""))
             print(f"  Exception Type: {error.exception_type}")
             print(f"  Error Message: {error.error_message}")
+            if error.script_name:
+                print(f"  Script: {error.script_name}:{error.line_number}")
             if error.server_error:
                 # Truncate server error if too long
                 server_err_display = error.server_error
                 print(f"  Server Error: {server_err_display}")
             print(f"  Timestamp: {error.timestamp}")
-
-        if len(detailed_errors) > 10:
-            print(f"\n... and {len(detailed_errors) - 10} more errors")
+            if error.traceback:
+                print(f"  Traceback:\n{error.traceback}")
 
     print("\n" + "=" * 60)
