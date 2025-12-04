@@ -14,6 +14,7 @@ import json
 import argparse
 import random
 import multiprocessing
+import asyncio
 import time
 from datetime import datetime
 from pathlib import Path
@@ -149,7 +150,7 @@ def load_conversation(file_path: str) -> dict:
         return json.load(f)
 
 
-def send_first_message(
+async def send_first_message(
     conversation_data: dict,
     conversation_filename: str,
     model_name: str,
@@ -159,7 +160,7 @@ def send_first_message(
     worker_id: int
 ) -> ConnectionAttempt:
     """
-    Send only the first message from a conversation.
+    Send only the first message from a conversation (async non-blocking).
 
     Args:
         conversation_data: Preloaded conversation data
@@ -198,9 +199,9 @@ def send_first_message(
             base_url=api_base
         )
 
-        # Send message and measure latency
+        # Send message and measure latency (non-blocking async call)
         start_time = time.time()
-        response = llm.invoke([HumanMessage(content=first_message)])
+        response = await llm.ainvoke([HumanMessage(content=first_message)])
         end_time = time.time()
 
         latency = end_time - start_time
@@ -224,7 +225,7 @@ def send_first_message(
         )
 
 
-def worker_process(
+async def worker_task(
     worker_id: int,
     conversations: Dict[str, dict],
     available_models: List[str],
@@ -233,7 +234,7 @@ def worker_process(
     api_base: str
 ) -> ConnectionAttempt:
     """
-    Worker process entry point - sends first message from a random conversation.
+    Async worker task - sends first message from a random conversation.
 
     Args:
         worker_id: Unique worker ID
@@ -271,7 +272,7 @@ def worker_process(
     conversation_filename = random.choice(list(conversations.keys()))
     conversation_data = conversations[conversation_filename]
 
-    return send_first_message(
+    return await send_first_message(
         conversation_data=conversation_data,
         conversation_filename=conversation_filename,
         model_name=model_name,
@@ -282,7 +283,7 @@ def worker_process(
     )
 
 
-def test_capacity(
+async def test_capacity(
     num_connections: int,
     conversations: Dict[str, dict],
     available_models: List[str],
@@ -291,7 +292,7 @@ def test_capacity(
     api_base: str
 ) -> CapacityTestResult:
     """
-    Test server capacity with a specific number of concurrent connections.
+    Test server capacity with a specific number of concurrent connections (async).
 
     Args:
         num_connections: Number of concurrent connections to attempt
@@ -310,22 +311,21 @@ def test_capacity(
 
     start_time = time.time()
 
-    # Create worker pool and launch all workers simultaneously
-    with multiprocessing.Pool(processes=num_connections) as pool:
-        worker_args = [
-            (
-                worker_id,
-                conversations,
-                available_models,
-                temperature,
-                api_key,
-                api_base
-            )
-            for worker_id in range(1, num_connections + 1)
-        ]
+    # Create all worker tasks
+    tasks = [
+        worker_task(
+            worker_id=worker_id,
+            conversations=conversations,
+            available_models=available_models,
+            temperature=temperature,
+            api_key=api_key,
+            api_base=api_base
+        )
+        for worker_id in range(1, num_connections + 1)
+    ]
 
-        # Run all workers in parallel
-        attempts = pool.starmap(worker_process, worker_args)
+    # Run all tasks concurrently and wait for all to complete
+    attempts = await asyncio.gather(*tasks, return_exceptions=False)
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -357,7 +357,7 @@ def test_capacity(
     return result
 
 
-def binary_search_capacity(
+async def binary_search_capacity(
     max_connections: int,
     conversations: Dict[str, dict],
     available_models: List[str],
@@ -367,7 +367,7 @@ def binary_search_capacity(
     recovery_delay: float = 15.0
 ) -> BinarySearchResult:
     """
-    Use binary search to find maximum number of successful connections.
+    Use binary search to find maximum number of successful connections (async).
 
     Args:
         max_connections: Upper bound for search
@@ -402,7 +402,7 @@ def binary_search_capacity(
         mid = (left + right) // 2
 
         # Test at this capacity
-        result = test_capacity(
+        result = await test_capacity(
             num_connections=mid,
             conversations=conversations,
             available_models=available_models,
@@ -427,7 +427,7 @@ def binary_search_capacity(
         # Add recovery delay between iterations (but not after the last one)
         if left <= right and recovery_delay > 0:
             print(f"Waiting {recovery_delay}s for server recovery...")
-            time.sleep(recovery_delay)
+            await asyncio.sleep(recovery_delay)
 
     search_end = time.time()
     total_duration = search_end - search_start
@@ -534,8 +534,8 @@ def print_detailed_statistics(result: BinarySearchResult):
     print(f"{'='*70}")
 
 
-def main():
-    """Main function."""
+async def main():
+    """Main async function."""
     parser = argparse.ArgumentParser(
         description='Find maximum concurrent connections using binary search',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -647,7 +647,7 @@ Examples:
     print()
 
     # Run binary search
-    result = binary_search_capacity(
+    result = await binary_search_capacity(
         max_connections=args.max,
         conversations=conversations,
         available_models=available_models,
@@ -666,7 +666,7 @@ Examples:
 
 if __name__ == "__main__":
     try:
-        main()
+        asyncio.run(main())
     except KeyboardInterrupt:
         print("\n\nInterrupted by user. Exiting...")
         sys.exit(0)
