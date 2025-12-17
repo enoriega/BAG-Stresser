@@ -145,7 +145,8 @@ async def send_first_message(
     temperature: float,
     api_key: str,
     api_base: str,
-    worker_id: int
+    worker_id: int,
+    timeout: float = 60.0
 ) -> ConnectionAttempt:
     """
     Send only the first message from a conversation (async non-blocking).
@@ -158,6 +159,7 @@ async def send_first_message(
         api_key: API key
         api_base: API base URL
         worker_id: Worker process ID
+        timeout: Request timeout in seconds (default: 60.0)
 
     Returns:
         ConnectionAttempt with results
@@ -179,12 +181,13 @@ async def send_first_message(
 
         first_message = user_messages[0]['content']
 
-        # Create LLM client
+        # Create LLM client with timeout
         llm = ChatOpenAI(
             model=model_name,
             temperature=temperature,
             api_key=api_key,
-            base_url=api_base
+            base_url=api_base,
+            timeout=timeout
         )
 
         # Send message and measure latency (non-blocking async call)

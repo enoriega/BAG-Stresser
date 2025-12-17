@@ -5,4 +5,4 @@ set -e
 source /app/.venv/bin/activate
 
 # Run the multi_session.py script with all passed arguments
-exec python /app/multi_session.py "$@"
+exec "$@"

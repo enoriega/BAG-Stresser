@@ -22,3 +22,4 @@ SOLUTION_SUMMARY.md
 .pytest_cache/
 .coverage
 htmlcov/
+results*.json

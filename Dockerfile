@@ -23,4 +23,4 @@ RUN chmod +x /app/entrypoint.sh
 ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Default command arguments (can be overridden)
-CMD ["--duration", "60", "--sessions", "1"]
+CMD ["python", "/app/multi_session.py", "--duration", "60", "--sessions", "1"]

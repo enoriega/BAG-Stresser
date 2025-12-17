@@ -14,6 +14,7 @@ import argparse
 import random
 import asyncio
 import time
+import multiprocessing as mp
 from pathlib import Path
 from typing import List, Dict
 from dotenv import load_dotenv
@@ -39,7 +40,8 @@ async def worker_task(
     available_models: List[str],
     temperature: float,
     api_key: str,
-    api_base: str
+    api_base: str,
+    timeout: float = 60.0
 ) -> ConnectionAttempt:
     """
     Async worker task - sends first message from a random conversation.
@@ -51,6 +53,7 @@ async def worker_task(
         temperature: Temperature parameter
         api_key: API key
         api_base: API base URL
+        timeout: Request timeout in seconds (default: 60.0)
 
     Returns:
         ConnectionAttempt with results
@@ -87,11 +90,63 @@ async def worker_task(
         temperature=temperature,
         api_key=api_key,
         api_base=api_base,
-        worker_id=worker_id
+        worker_id=worker_id,
+        timeout=timeout
     )
 
 
 
+
+
+def run_worker_process(
+    worker_id: int,
+    num_connections: int,
+    conversations: Dict[str, dict],
+    available_models: List[str],
+    temperature: float,
+    api_key: str,
+    api_base: str,
+    result_queue: mp.Queue,
+    timeout: float = 60.0
+) -> None:
+    """
+    Worker process that runs async tasks for a subset of connections.
+
+    Args:
+        worker_id: ID of this worker process
+        num_connections: Number of connections this worker should handle
+        conversations: Preloaded conversations dictionary
+        available_models: List of available models to randomly select from
+        temperature: Temperature parameter
+        api_key: API key
+        api_base: API base URL
+        result_queue: Queue to send results back to main process
+        timeout: Request timeout in seconds (default: 60.0)
+    """
+    async def run_async_tasks():
+        # Create all worker tasks for this process
+        tasks = [
+            worker_task(
+                worker_id=worker_id * 1000 + task_id,  # Unique ID across all processes
+                conversations=conversations,
+                available_models=available_models,
+                temperature=temperature,
+                api_key=api_key,
+                api_base=api_base,
+                timeout=timeout
+            )
+            for task_id in range(num_connections)
+        ]
+
+        # Run all tasks concurrently
+        attempts = await asyncio.gather(*tasks, return_exceptions=False)
+        return attempts
+
+    # Run the async tasks in this process
+    attempts = asyncio.run(run_async_tasks())
+
+    # Send results back to main process
+    result_queue.put(attempts)
 
 
 async def test_capacity(
@@ -100,10 +155,12 @@ async def test_capacity(
     available_models: List[str],
     temperature: float,
     api_key: str,
-    api_base: str
+    api_base: str,
+    num_workers: int = 1,
+    timeout: float = 60.0
 ) -> CapacityTestResult:
     """
-    Test server capacity with a specific number of concurrent connections (async).
+    Test server capacity with a specific number of concurrent connections.
 
     Args:
         num_connections: Number of concurrent connections to attempt
@@ -112,31 +169,78 @@ async def test_capacity(
         temperature: Temperature parameter
         api_key: API key
         api_base: API base URL
+        num_workers: Number of worker processes to use (default: 1)
+        timeout: Request timeout in seconds (default: 60.0)
 
     Returns:
         CapacityTestResult with test outcomes
     """
     print(f"\n{'='*70}")
     print(f"Testing {num_connections} concurrent connections...")
+    if num_workers > 1:
+        print(f"Using {num_workers} worker processes")
     print(f"{'='*70}")
 
     start_time = time.time()
 
-    # Create all worker tasks
-    tasks = [
-        worker_task(
-            worker_id=worker_id,
-            conversations=conversations,
-            available_models=available_models,
-            temperature=temperature,
-            api_key=api_key,
-            api_base=api_base
-        )
-        for worker_id in range(1, num_connections + 1)
-    ]
+    if num_workers == 1:
+        # Single-process mode: use async only
+        tasks = [
+            worker_task(
+                worker_id=worker_id,
+                conversations=conversations,
+                available_models=available_models,
+                temperature=temperature,
+                api_key=api_key,
+                api_base=api_base,
+                timeout=timeout
+            )
+            for worker_id in range(1, num_connections + 1)
+        ]
 
-    # Run all tasks concurrently and wait for all to complete
-    attempts = await asyncio.gather(*tasks, return_exceptions=False)
+        # Run all tasks concurrently and wait for all to complete
+        attempts = await asyncio.gather(*tasks, return_exceptions=False)
+    else:
+        # Multi-process mode: distribute connections across worker processes
+        connections_per_worker = num_connections // num_workers
+        remaining_connections = num_connections % num_workers
+
+        # Create queue for collecting results
+        result_queue = mp.Queue()
+        processes = []
+
+        # Start worker processes
+        for worker_id in range(num_workers):
+            # Distribute remaining connections among first workers
+            worker_connections = connections_per_worker + (1 if worker_id < remaining_connections else 0)
+
+            if worker_connections > 0:
+                process = mp.Process(
+                    target=run_worker_process,
+                    args=(
+                        worker_id,
+                        worker_connections,
+                        conversations,
+                        available_models,
+                        temperature,
+                        api_key,
+                        api_base,
+                        result_queue,
+                        timeout
+                    )
+                )
+                process.start()
+                processes.append(process)
+
+        # Wait for all processes to complete
+        for process in processes:
+            process.join()
+
+        # Collect results from all workers
+        attempts = []
+        while not result_queue.empty():
+            worker_attempts = result_queue.get()
+            attempts.extend(worker_attempts)
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -174,7 +278,9 @@ async def single_test_capacity(
     available_models: List[str],
     temperature: float,
     api_key: str,
-    api_base: str
+    api_base: str,
+    num_workers: int = 1,
+    timeout: float = 60.0
 ) -> BinarySearchResult:
     """
     Run a single capacity test without binary search (async).
@@ -186,6 +292,8 @@ async def single_test_capacity(
         temperature: Temperature parameter
         api_key: API key
         api_base: API base URL
+        num_workers: Number of worker processes to use (default: 1)
+        timeout: Request timeout in seconds (default: 60.0)
 
     Returns:
         BinarySearchResult with single test result
@@ -196,6 +304,8 @@ async def single_test_capacity(
     print(f"Testing: {num_connections} connections")
     print(f"Models: {len(available_models)} available (randomly selected per worker)")
     print(f"Temperature: {temperature}")
+    if num_workers > 1:
+        print(f"Worker processes: {num_workers}")
     print(f"{'='*70}")
 
     test_start = time.time()
@@ -207,7 +317,9 @@ async def single_test_capacity(
         available_models=available_models,
         temperature=temperature,
         api_key=api_key,
-        api_base=api_base
+        api_base=api_base,
+        num_workers=num_workers,
+        timeout=timeout
     )
 
     test_end = time.time()
@@ -230,7 +342,9 @@ async def binary_search_capacity(
     temperature: float,
     api_key: str,
     api_base: str,
-    recovery_delay: float = 15.0
+    recovery_delay: float = 15.0,
+    num_workers: int = 1,
+    timeout: float = 60.0
 ) -> BinarySearchResult:
     """
     Use binary search to find maximum number of successful connections (async).
@@ -243,6 +357,8 @@ async def binary_search_capacity(
         api_key: API key
         api_base: API base URL
         recovery_delay: Seconds to wait between iterations for server recovery (default: 15.0)
+        num_workers: Number of worker processes to use (default: 1)
+        timeout: Request timeout in seconds (default: 60.0)
 
     Returns:
         BinarySearchResult with final results
@@ -254,6 +370,8 @@ async def binary_search_capacity(
     print(f"Models: {len(available_models)} available (randomly selected per worker)")
     print(f"Temperature: {temperature}")
     print(f"Recovery delay: {recovery_delay}s between iterations")
+    if num_workers > 1:
+        print(f"Worker processes: {num_workers}")
     print(f"{'='*70}")
 
     search_start = time.time()
@@ -274,7 +392,9 @@ async def binary_search_capacity(
             available_models=available_models,
             temperature=temperature,
             api_key=api_key,
-            api_base=api_base
+            api_base=api_base,
+            num_workers=num_workers,
+            timeout=timeout
         )
         test_results.append(result)
 
@@ -329,11 +449,17 @@ Examples:
   # Run a single test with exactly 100 connections (no binary search)
   python capacity_tester.py --max 100 --no-binary-search
 
-  # Single test with JSON output
-  python capacity_tester.py --max 150 --no-binary-search --json-output results.json
+  # Use 4 worker processes for parallel execution
+  python capacity_tester.py --max 200 --workers 4
 
-  # Binary search with JSON output
-  python capacity_tester.py --max 200 --model gpt-4 --json-output capacity_test_results.json
+  # Single test with 8 workers and JSON output
+  python capacity_tester.py --max 500 --workers 8 --no-binary-search --json-output results.json
+
+  # Binary search with 4 workers and JSON output
+  python capacity_tester.py --max 200 --workers 4 --model gpt-4 --json-output capacity_test_results.json
+
+  # Test with custom timeout of 30 seconds
+  python capacity_tester.py --max 100 --timeout 30
         """
     )
 
@@ -378,6 +504,24 @@ Examples:
         action='store_true',
         help='Skip binary search and run a single test with the specified --max connections'
     )
+    parser.add_argument(
+        '--model-filter',
+        type=str,
+        default='model_filter.txt',
+        help='Path to file containing model names to exclude (default: model_filter.txt)'
+    )
+    parser.add_argument(
+        '--workers', '-w',
+        type=int,
+        default=1,
+        help='Number of worker processes to use for parallel execution (default: 1)'
+    )
+    parser.add_argument(
+        '--timeout',
+        type=float,
+        default=60.0,
+        help='Request timeout in seconds (default: 60.0)'
+    )
 
     args = parser.parse_args()
 
@@ -392,7 +536,7 @@ Examples:
 
     # Fetch available models for workers to randomly select from
     print("Fetching available models...")
-    available_models = get_available_models(api_key, api_base, filter_file="model_filter.txt")
+    available_models = get_available_models(api_key, api_base, filter_file=args.model_filter)
 
     if not available_models:
         print("Error: Could not fetch available models from API")
@@ -422,6 +566,14 @@ Examples:
         print("Error: Recovery delay must be non-negative")
         sys.exit(1)
 
+    if args.workers < 1:
+        print("Error: Number of workers must be at least 1")
+        sys.exit(1)
+
+    if args.timeout <= 0:
+        print("Error: Timeout must be greater than 0")
+        sys.exit(1)
+
     # Verify conversations directory exists
     conv_path = Path(args.conversations_dir)
     if not conv_path.exists():
@@ -447,7 +599,9 @@ Examples:
             available_models=available_models,
             temperature=args.temperature,
             api_key=api_key,
-            api_base=api_base
+            api_base=api_base,
+            num_workers=args.workers,
+            timeout=args.timeout
         )
     else:
         result = await binary_search_capacity(
@@ -457,7 +611,9 @@ Examples:
             temperature=args.temperature,
             api_key=api_key,
             api_base=api_base,
-            recovery_delay=args.recovery_delay
+            recovery_delay=args.recovery_delay,
+            num_workers=args.workers,
+            timeout=args.timeout
         )
 
     # Print detailed statistics
@@ -475,6 +631,9 @@ Examples:
 
 
 if __name__ == "__main__":
+    # Set multiprocessing start method to 'spawn' for cross-platform compatibility
+    mp.set_start_method('spawn', force=True)
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
