@@ -28,3 +28,5 @@ openai.gpt-oss-safeguard-20b
 global.twelvelabs.pegasus-1-2-v1:0
 openai.gpt-oss-safeguard-120b
 bedrock-claude-4-5-sonnet
+google.gemma-3-12b-it
+google.gemma-3-27b-it

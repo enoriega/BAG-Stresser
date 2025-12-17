@@ -27,6 +27,9 @@ class ConnectionAttempt:
     error_type: Optional[str] = None
     error_traceback: Optional[str] = None
     latency_seconds: Optional[float] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -197,12 +200,27 @@ async def send_first_message(
 
         latency = end_time - start_time
 
+        # Extract token usage from response metadata
+        input_tokens = None
+        output_tokens = None
+        total_tokens = None
+
+        if hasattr(response, 'response_metadata') and response.response_metadata:
+            usage = response.response_metadata.get('token_usage', {})
+            if usage:
+                input_tokens = usage.get('prompt_tokens')
+                output_tokens = usage.get('completion_tokens')
+                total_tokens = usage.get('total_tokens')
+
         return ConnectionAttempt(
             worker_id=worker_id,
             conversation_file=conversation_filename,
             model_name=model_name,
             success=True,
-            latency_seconds=latency
+            latency_seconds=latency,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens
         )
 
     except Exception as e:
